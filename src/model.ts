@@ -10,15 +10,23 @@ export interface MindNode {
   collapsed?: boolean;
 }
 
-export interface MindMapDoc {
+/** One mindmap tree: a top-level bullet (its root) plus its own layout style. */
+export interface MindTree {
   root: MindNode;
   layout: Layout;
-  /** True when `root` is a synthetic container (the file had zero or many top-level bullets). */
-  syntheticRoot: boolean;
 }
 
-export const DEFAULT_LAYOUT: Layout = "top-down";
+export interface MindMapDoc {
+  /** One tree per first-level bullet, stacked top to bottom. */
+  trees: MindTree[];
+}
+
+export const DEFAULT_LAYOUT: Layout = "left-right";
 const LAYOUTS: Layout[] = ["top-down", "left-right"];
+
+function isLayout(s: string): s is Layout {
+  return (LAYOUTS as string[]).includes(s);
+}
 
 let idCounter = 0;
 function nextId(): number {
@@ -30,27 +38,56 @@ export function newNode(text: string): MindNode {
 }
 
 interface FrontMatter {
-  layout?: Layout;
+  /** One layout per tree, in order. May be shorter than the number of trees. */
+  layouts: Layout[];
   raw: Record<string, string>;
+}
+
+/** Strip surrounding single/double quotes that Obsidian's Properties editor may add. */
+function unquote(s: string): string {
+  return s.trim().replace(/^["']/, "").replace(/["']$/, "").trim();
+}
+
+/** Parse an inline or single-value layout list, e.g. `[top-down, "left-right"]` or `top-down`. */
+function parseLayoutList(value: string): Layout[] {
+  const inner = value.trim().replace(/^\[/, "").replace(/\]$/, "");
+  return inner
+    .split(",")
+    .map((s) => unquote(s))
+    .filter((s) => s.length > 0)
+    .filter(isLayout);
 }
 
 /** Split a document into its front-matter block and the remaining body. */
 function splitFrontMatter(content: string): { fm: FrontMatter; body: string } {
-  const fm: FrontMatter = { raw: {} };
+  const fm: FrontMatter = { layouts: [], raw: {} };
   // Front-matter must start at the very first line.
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
   if (!match) {
     return { fm, body: content };
   }
   const block = match[1];
+  let collectingLayouts = false;
   for (const line of block.split(/\r?\n/)) {
     const kv = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
-    if (!kv) continue;
-    const key = kv[1].trim();
-    const value = kv[2].trim();
-    fm.raw[key] = value;
-    if (key === "mindmap-layout" && LAYOUTS.includes(value as Layout)) {
-      fm.layout = value as Layout;
+    if (kv) {
+      collectingLayouts = false;
+      const key = kv[1].trim();
+      const value = kv[2].trim();
+      fm.raw[key] = value;
+      if (key === "mindmap-layout") {
+        if (value) fm.layouts = parseLayoutList(value);
+        else collectingLayouts = true; // block-style YAML list follows
+      }
+      continue;
+    }
+    // Block list item under `mindmap-layout:` (e.g. "  - top-down" or "  - \"top-down\"").
+    if (collectingLayouts) {
+      const item = line.match(/^\s*-\s*(.+?)\s*$/);
+      if (item) {
+        const value = unquote(item[1]);
+        if (isLayout(value)) fm.layouts.push(value);
+      }
     }
   }
   return { fm, body: content.slice(match[0].length) };
@@ -73,13 +110,12 @@ function encodeBreaks(s: string): string {
 }
 
 /**
- * Parse Markdown content into a mindmap document.
- * @param rootTitle fallback title for a synthetic root (typically the file basename).
+ * Parse Markdown content into a mindmap document. Each first-level bullet becomes a
+ * tree; its layout comes from `mindmap-layout[i]`, falling back to `defaultLayout`.
  */
-export function parseMarkdown(content: string, rootTitle: string, defaultLayout: Layout): MindMapDoc {
+export function parseMarkdown(content: string, defaultLayout: Layout): MindMapDoc {
   idCounter = 0;
   const { fm, body } = splitFrontMatter(content);
-  const layout = fm.layout ?? defaultLayout;
 
   interface Parsed {
     node: MindNode;
@@ -106,13 +142,11 @@ export function parseMarkdown(content: string, rootTitle: string, defaultLayout:
     stack.push({ node, indent });
   }
 
-  if (tops.length === 1) {
-    return { root: tops[0], layout, syntheticRoot: false };
-  }
-  // Zero or many top-level bullets → wrap in a synthetic root.
-  const root = newNode(rootTitle);
-  root.children = tops;
-  return { root, layout, syntheticRoot: true };
+  const trees: MindTree[] = tops.map((root, i) => ({
+    root,
+    layout: fm.layouts[i] ?? defaultLayout,
+  }));
+  return { trees };
 }
 
 /** Serialize a mindmap document back to Markdown, preserving unknown front-matter keys. */
@@ -120,10 +154,10 @@ export function serializeMarkdown(doc: MindMapDoc, existing?: string): string {
   const preserved = existing ? splitFrontMatter(existing).fm.raw : {};
   const fmLines: string[] = [];
   for (const [k, v] of Object.entries(preserved)) {
-    if (k === "mindmap-layout") continue; // re-emitted below with current value
+    if (k === "mindmap-layout") continue; // re-emitted below with current values
     fmLines.push(`${k}: ${v}`);
   }
-  fmLines.push(`mindmap-layout: ${doc.layout}`);
+  fmLines.push(`mindmap-layout: [${doc.trees.map((t) => t.layout).join(", ")}]`);
 
   const lines: string[] = ["---", ...fmLines, "---", ""];
 
@@ -132,11 +166,7 @@ export function serializeMarkdown(doc: MindMapDoc, existing?: string): string {
     for (const child of node.children) writeNode(child, depth + 1);
   };
 
-  if (doc.syntheticRoot) {
-    for (const child of doc.root.children) writeNode(child, 0);
-  } else {
-    writeNode(doc.root, 0);
-  }
+  for (const tree of doc.trees) writeNode(tree.root, 0);
   return lines.join("\n") + "\n";
 }
 

@@ -69,7 +69,7 @@ export default class MindMapPlugin extends Plugin {
     const leaf = this.app.workspace.getLeaf(false);
     await leaf.setViewState({
       type: VIEW_TYPE_MINDMAP,
-      state: { file: file.path, layout: this.settings.defaultLayout },
+      state: { file: file.path },
       active: true,
     });
     this.app.workspace.revealLeaf(leaf);
@@ -98,7 +98,7 @@ class MindMapSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Default layout")
-      .setDesc("Layout used when opening a file that has no `mindmap-layout` in its front-matter.")
+      .setDesc("Layout for trees with no style listed in the `mindmap-layout` front-matter.")
       .addDropdown((dd) =>
         dd
           .addOption("top-down", "Top-down")

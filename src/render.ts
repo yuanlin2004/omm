@@ -1,11 +1,23 @@
-// D3-based SVG renderer for a mindmap tree. Supports top-down and left-right layouts,
-// pan/zoom, collapse/expand, multi-line rename, node create/delete, and undo.
+// D3-based SVG renderer for one or more mindmap trees. Each tree is laid out with its
+// own style (top-down or left-right) and the trees are stacked top to bottom in a single,
+// pan/zoomable canvas. Supports collapse/expand, multi-line rename, create/delete, undo,
+// and opening links.
 
 import { hierarchy, tree, HierarchyPointNode } from "d3-hierarchy";
 import { select, Selection } from "d3-selection";
 import { zoom, zoomIdentity, ZoomBehavior } from "d3-zoom";
 import { linkVertical, linkHorizontal } from "d3-shape";
-import { Layout, MindNode, newNode, extractLinks, segmentText, displayLine, LinkInfo } from "./model";
+import {
+  Layout,
+  MindNode,
+  MindTree,
+  newNode,
+  nextLayout,
+  extractLinks,
+  segmentText,
+  displayLine,
+  LinkInfo,
+} from "./model";
 
 const NODE_MIN_HEIGHT = 30;
 const LINE_HEIGHT = 18;
@@ -18,6 +30,8 @@ const MIN_NODE_WIDTH = 40;
 const LEVEL_GAP_TD = 45; // gap between level edges (top-down)
 const LEVEL_GAP_LR = 70; // gap between level edges (left-right)
 const SIBLING_GAP = 18; // gap between adjacent sibling edges
+const TREE_GAP = 60; // vertical gap between stacked trees
+const TREE_PAD = 10; // padding around each tree's bounding box
 const BG_COLOR = "#ffffff";
 const LINK_COLOR = "#2563eb";
 const PALETTE = ["#4c6ef5", "#37b24d", "#f59f00", "#e8590c", "#ae3ec9", "#1098ad", "#e64980"];
@@ -74,15 +88,19 @@ function nodeDims(text: string): { w: number; h: number; lines: string[] } {
 }
 
 interface RendererOptions {
-  /** Called after a mutation that must be persisted to Markdown (rename, add, delete). */
+  /** Called after a mutation that must be persisted to Markdown (rename, add, delete, layout). */
   onChange: () => void;
   /** Called when the user requests undo (Cmd/Ctrl+Z). */
   onUndo: () => void;
+  /** Called when the selection changes, so the UI can reflect the selected tree's layout. */
+  onSelectionChange: () => void;
   /** Called to open the link(s) in a node; `x`/`y` are screen coords for a picker. */
   onOpenLinks: (links: LinkInfo[], x: number, y: number) => void;
 }
 
 const CLICK_DELAY = 250; // ms to wait for a possible double-click before opening a link
+
+type GroupSel = Selection<SVGGElement, unknown, null, undefined>;
 
 export class MindMapRenderer {
   private container: HTMLElement;
@@ -92,15 +110,13 @@ export class MindMapRenderer {
   private viewport!: Selection<SVGGElement, unknown, null, undefined>;
   private zoomBehavior!: ZoomBehavior<SVGSVGElement, unknown>;
 
-  private root: MindNode | null = null;
-  private layout: Layout = "top-down";
+  /** Shared reference to the document's trees (mutations here persist via onChange). */
+  private trees: MindTree[] = [];
   private editing = false;
   /** Currently selected node (by reference). Cleared when new data is loaded. */
   private selected: MindNode | null = null;
-  /** Last laid-out points, used to locate a node's on-screen position for editing. */
-  private lastPoints: HierarchyPointNode<MindNode>[] = [];
-  /** Depth-axis coordinate per level, packed by the max node extent at each depth. */
-  private levelOffset: number[] = [];
+  /** Per-node on-screen location, for placing the inline editor. Keyed by node id. */
+  private placed = new Map<number, { group: GroupSel; x: number; y: number }>();
   /** Pending single-click action, deferred so a double-click can cancel it. */
   private clickTimer: number | null = null;
 
@@ -128,7 +144,7 @@ export class MindMapRenderer {
     this.svg.on("mousedown", (event: MouseEvent) => {
       if (!(event.target as Element).closest(".omm-node")) {
         this.clearClickTimer();
-        this.selected = null;
+        this.setSelected(null);
         this.highlightSelection();
       }
     });
@@ -148,25 +164,31 @@ export class MindMapRenderer {
     this.container.addEventListener("keydown", (e) => this.onKeyDown(e));
   }
 
-  setData(root: MindNode, layout: Layout) {
-    this.root = root;
-    this.layout = layout;
+  setData(trees: MindTree[]) {
+    this.trees = trees;
     this.selected = null;
   }
 
-  setLayout(layout: Layout) {
-    this.layout = layout;
+  /** Toggle the layout of the selected tree (or the first tree if nothing is selected). */
+  toggleSelectedLayout() {
+    const t = this.selectedTree();
+    if (!t) return;
+    t.layout = nextLayout(t.layout);
+    this.opts.onChange();
     this.render(true);
   }
 
-  /** Expand every collapsed node (UI-only state, not persisted). */
+  getSelectedLayout(): Layout | null {
+    return this.selectedTree()?.layout ?? null;
+  }
+
+  /** Expand every collapsed node across all trees (UI-only state, not persisted). */
   expandAll() {
-    if (!this.root) return;
     const walk = (n: MindNode) => {
       n.collapsed = false;
       n.children.forEach(walk);
     };
-    walk(this.root);
+    this.trees.forEach((t) => walk(t.root));
     this.render(true);
   }
 
@@ -178,28 +200,39 @@ export class MindMapRenderer {
     this.container.focus();
   }
 
-  // Axis mapping: `d.x` is the breadth (sibling) position from the tree layout;
-  // the depth position comes from `levelOffset`. In left-right, depth runs horizontally.
-  private px(d: HierarchyPointNode<MindNode>): number {
-    return this.layout === "top-down" ? d.x : this.levelOffset[d.depth];
-  }
-  private py(d: HierarchyPointNode<MindNode>): number {
-    return this.layout === "top-down" ? this.levelOffset[d.depth] : d.x;
-  }
+  // --- Rendering ---
 
-  /** Render the tree. Pass `fitView` to recenter; structural edits keep the current view. */
+  /** Render all trees. Pass `fitView` to recenter; structural edits keep the current view. */
   render(fitView = false) {
-    if (!this.root) return;
     this.clearClickTimer();
     this.viewport.selectAll("*").remove();
+    this.placed.clear();
 
-    // Breadth = the sibling-spacing axis; depth = the parent→child axis.
+    let offsetY = 0;
+    for (const mt of this.trees) {
+      const treeG = this.viewport.append("g").attr("class", "omm-tree");
+      const box = this.renderTree(mt, treeG);
+      // Left-align each tree at x = 0 and stack it below the previous one.
+      treeG.attr("transform", `translate(${-box.minX},${offsetY - box.minY})`);
+      offsetY += box.maxY - box.minY + TREE_GAP;
+    }
+
+    this.highlightSelection();
+    if (fitView) this.fit();
+  }
+
+  /** Lay out and draw a single tree into `treeG`; returns its local bounding box. */
+  private renderTree(
+    mt: MindTree,
+    treeG: GroupSel
+  ): { minX: number; minY: number; maxX: number; maxY: number } {
+    const layout = mt.layout;
     const breadthExtent = (text: string) =>
-      this.layout === "top-down" ? nodeDims(text).w : nodeDims(text).h;
+      layout === "top-down" ? nodeDims(text).w : nodeDims(text).h;
     const depthExtent = (text: string) =>
-      this.layout === "top-down" ? nodeDims(text).h : nodeDims(text).w;
+      layout === "top-down" ? nodeDims(text).h : nodeDims(text).w;
 
-    const h = hierarchy(this.root, (d) => (d.collapsed ? null : d.children));
+    const h = hierarchy(mt.root, (d) => (d.collapsed ? null : d.children));
     // nodeSize is [1, 1] so `separation` returns pixels: pack each sibling pair by
     // their real sizes instead of spacing the whole tree by the single largest node.
     const rootPoint = tree<MindNode>()
@@ -209,7 +242,6 @@ export class MindMapRenderer {
         return a.parent === b.parent ? gap : gap + SIBLING_GAP;
       })(h);
     const nodes = rootPoint.descendants();
-    this.lastPoints = nodes;
     const links = rootPoint.links();
 
     // Pack each level by the widest/tallest node actually at that depth.
@@ -218,23 +250,47 @@ export class MindMapRenderer {
     for (const n of nodes) {
       extentAt[n.depth] = Math.max(extentAt[n.depth], depthExtent(n.data.text));
     }
-    const levelGap = this.layout === "top-down" ? LEVEL_GAP_TD : LEVEL_GAP_LR;
+    const levelGap = layout === "top-down" ? LEVEL_GAP_TD : LEVEL_GAP_LR;
     const levelOffset: number[] = new Array(maxDepth + 1).fill(0);
     for (let d = 1; d <= maxDepth; d++) {
       levelOffset[d] = levelOffset[d - 1] + extentAt[d - 1] / 2 + levelGap + extentAt[d] / 2;
     }
-    this.levelOffset = levelOffset;
+
+    // `d.x` is the breadth (sibling) position; depth comes from levelOffset.
+    const px = (d: HierarchyPointNode<MindNode>) =>
+      layout === "top-down" ? d.x : levelOffset[d.depth];
+    const py = (d: HierarchyPointNode<MindNode>) =>
+      layout === "top-down" ? levelOffset[d.depth] : d.x;
+
+    // Analytic bounding box (independent of DOM layout / visibility).
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const d of nodes) {
+      const { w, h: nh } = nodeDims(d.data.text);
+      const cx = px(d);
+      const cy = py(d);
+      minX = Math.min(minX, cx - w / 2);
+      maxX = Math.max(maxX, cx + w / 2);
+      minY = Math.min(minY, cy - nh / 2);
+      maxY = Math.max(maxY, cy + nh / 2);
+    }
+    minX -= TREE_PAD;
+    minY -= TREE_PAD;
+    maxX += TREE_PAD;
+    maxY += TREE_PAD;
 
     const linkGen =
-      this.layout === "top-down"
+      layout === "top-down"
         ? linkVertical<any, HierarchyPointNode<MindNode>>()
-            .x((d) => this.px(d))
-            .y((d) => this.py(d))
+            .x((d) => px(d))
+            .y((d) => py(d))
         : linkHorizontal<any, HierarchyPointNode<MindNode>>()
-            .x((d) => this.px(d))
-            .y((d) => this.py(d));
+            .x((d) => px(d))
+            .y((d) => py(d));
 
-    this.viewport
+    treeG
       .append("g")
       .attr("class", "omm-links")
       .selectAll("path")
@@ -246,137 +302,139 @@ export class MindMapRenderer {
       .attr("stroke-width", 1.5)
       .attr("d", (d) => linkGen(d as any) as string);
 
-    const nodeG = this.viewport
+    const nodeG = treeG
       .append("g")
       .attr("class", "omm-nodes")
       .selectAll("g")
       .data(nodes)
       .join("g")
       .attr("class", "omm-node")
-      .attr("transform", (d) => `translate(${this.px(d)},${this.py(d)})`)
+      .attr("transform", (d) => `translate(${px(d)},${py(d)})`)
       .style("cursor", "pointer");
 
     nodeG.each((d, i, groups) => {
       const g = select(groups[i] as SVGGElement);
-      const { w, h: nh, lines } = nodeDims(d.data.text);
-      const color = PALETTE[d.depth % PALETTE.length];
-      const hasChildren = d.data.children.length > 0;
-      const isCollapsed = hasChildren && d.data.collapsed;
+      this.placed.set(d.data.id, { group: treeG, x: px(d), y: py(d) });
+      this.drawNode(g, d);
+    });
 
-      // Collapsed nodes get a "stacked card" hint peeking out behind them.
-      if (isCollapsed) {
-        g.append("rect")
-          .attr("class", "omm-node-stack")
-          .attr("x", -w / 2 + 4)
-          .attr("y", -nh / 2 + 4)
-          .attr("width", w)
-          .attr("height", nh)
-          .attr("rx", 6)
-          .attr("ry", 6)
-          .attr("fill", "#ffffff")
-          .attr("stroke", color)
-          .attr("stroke-width", 2)
-          .attr("opacity", 0.45);
-      }
+    return { minX, minY, maxX, maxY };
+  }
 
+  /** Draw the contents of a single node group and wire its interactions. */
+  private drawNode(g: GroupSel, d: HierarchyPointNode<MindNode>) {
+    const { w, h: nh, lines } = nodeDims(d.data.text);
+    const color = PALETTE[d.depth % PALETTE.length];
+    const hasChildren = d.data.children.length > 0;
+    const isCollapsed = hasChildren && d.data.collapsed;
+
+    // Collapsed nodes get a "stacked card" hint peeking out behind them.
+    if (isCollapsed) {
       g.append("rect")
-        .attr("class", "omm-node-rect")
-        .attr("x", -w / 2)
-        .attr("y", -nh / 2)
+        .attr("class", "omm-node-stack")
+        .attr("x", -w / 2 + 4)
+        .attr("y", -nh / 2 + 4)
         .attr("width", w)
         .attr("height", nh)
         .attr("rx", 6)
         .attr("ry", 6)
         .attr("fill", "#ffffff")
         .attr("stroke", color)
-        .attr("stroke-width", 2);
+        .attr("stroke-width", 2)
+        .attr("opacity", 0.45);
+    }
 
-      const text = g
-        .append("text")
-        .attr("class", "omm-node-text")
-        .attr("text-anchor", "middle")
-        .attr("font-family", "var(--font-interface, sans-serif)")
-        .attr("font-size", "14px")
-        .attr("fill", "#1f2733");
+    g.append("rect")
+      .attr("class", "omm-node-rect")
+      .attr("x", -w / 2)
+      .attr("y", -nh / 2)
+      .attr("width", w)
+      .attr("height", nh)
+      .attr("rx", 6)
+      .attr("ry", 6)
+      .attr("fill", "#ffffff")
+      .attr("stroke", color)
+      .attr("stroke-width", 2);
 
-      const startDy = -((lines.length - 1) / 2) * LINE_HEIGHT;
-      lines.forEach((line, idx) => {
-        // Each line is centered as a chunk; the first segment carries x/dy and the
-        // rest flow inline. Link segments are shown as labels, underlined.
-        segmentText(line).forEach((seg, sidx) => {
-          const tspan = text.append("tspan").attr("dominant-baseline", "central").text(seg.text);
-          if (sidx === 0) {
-            tspan.attr("x", 0).attr("dy", idx === 0 ? startDy : LINE_HEIGHT);
-          }
-          if (seg.link) {
-            tspan.attr("fill", LINK_COLOR).attr("text-decoration", "underline");
-          }
-        });
-      });
+    const text = g
+      .append("text")
+      .attr("class", "omm-node-text")
+      .attr("text-anchor", "middle")
+      .attr("font-family", "var(--font-interface, sans-serif)")
+      .attr("font-size", "14px")
+      .attr("fill", "#1f2733");
 
-      // Collapse/expand affordance, shown only while the node is selected.
-      if (hasChildren) {
-        const toggleX = w / 2 + 10;
-        const toggle = g
-          .append("g")
-          .attr("class", "omm-toggle-group")
-          .style("display", "none");
-        toggle
-          .append("circle")
-          .attr("class", "omm-toggle")
-          .attr("cx", toggleX)
-          .attr("cy", 0)
-          .attr("r", 7)
-          .attr("fill", color)
-          .on("click", (event: MouseEvent) => {
-            event.stopPropagation();
-            d.data.collapsed = !d.data.collapsed;
-            this.render();
-          });
-        toggle
-          .append("text")
-          .attr("class", "omm-toggle-sign")
-          .attr("x", toggleX)
-          .attr("y", 0)
-          .attr("text-anchor", "middle")
-          .attr("dominant-baseline", "central")
-          .attr("font-size", "12px")
-          .attr("fill", "#ffffff")
-          .style("pointer-events", "none")
-          .text(d.data.collapsed ? "+" : "−");
-      }
-
-      g.on("click", (event: MouseEvent) => {
-        event.stopPropagation();
-        this.clearClickTimer();
-        if (this.selected !== d.data) {
-          // First click selects the node.
-          this.selected = d.data;
-          this.container.focus();
-          this.highlightSelection();
-          return;
+    const startDy = -((lines.length - 1) / 2) * LINE_HEIGHT;
+    lines.forEach((line, idx) => {
+      // Each line is centered as a chunk; the first segment carries x/dy and the
+      // rest flow inline. Link segments are shown as labels, underlined.
+      segmentText(line).forEach((seg, sidx) => {
+        const tspan = text.append("tspan").attr("dominant-baseline", "central").text(seg.text);
+        if (sidx === 0) {
+          tspan.attr("x", 0).attr("dy", idx === 0 ? startDy : LINE_HEIGHT);
         }
-        // Already selected: a further click opens its link(s), deferred so that a
-        // double-click (to edit) can cancel it first.
-        const links = extractLinks(d.data.text);
-        if (links.length === 0) return;
-        const { clientX, clientY } = event;
-        this.clickTimer = window.setTimeout(() => {
-          this.clickTimer = null;
-          this.opts.onOpenLinks(links, clientX, clientY);
-        }, CLICK_DELAY);
-      });
-
-      g.on("dblclick", (event: MouseEvent) => {
-        event.stopPropagation();
-        this.clearClickTimer();
-        this.selected = d.data;
-        this.editNode(d.data, false);
+        if (seg.link) {
+          tspan.attr("fill", LINK_COLOR).attr("text-decoration", "underline");
+        }
       });
     });
 
-    this.highlightSelection();
-    if (fitView) this.fit();
+    // Collapse/expand affordance, shown only while the node is selected.
+    if (hasChildren) {
+      const toggleX = w / 2 + 10;
+      const toggle = g.append("g").attr("class", "omm-toggle-group").style("display", "none");
+      toggle
+        .append("circle")
+        .attr("class", "omm-toggle")
+        .attr("cx", toggleX)
+        .attr("cy", 0)
+        .attr("r", 7)
+        .attr("fill", color)
+        .on("click", (event: MouseEvent) => {
+          event.stopPropagation();
+          d.data.collapsed = !d.data.collapsed;
+          this.render();
+        });
+      toggle
+        .append("text")
+        .attr("class", "omm-toggle-sign")
+        .attr("x", toggleX)
+        .attr("y", 0)
+        .attr("text-anchor", "middle")
+        .attr("dominant-baseline", "central")
+        .attr("font-size", "12px")
+        .attr("fill", "#ffffff")
+        .style("pointer-events", "none")
+        .text(d.data.collapsed ? "+" : "−");
+    }
+
+    g.on("click", (event: MouseEvent) => {
+      event.stopPropagation();
+      this.clearClickTimer();
+      if (this.selected !== d.data) {
+        // First click selects the node.
+        this.setSelected(d.data);
+        this.container.focus();
+        this.highlightSelection();
+        return;
+      }
+      // Already selected: a further click opens its link(s), deferred so that a
+      // double-click (to edit) can cancel it first.
+      const links = extractLinks(d.data.text);
+      if (links.length === 0) return;
+      const { clientX, clientY } = event;
+      this.clickTimer = window.setTimeout(() => {
+        this.clickTimer = null;
+        this.opts.onOpenLinks(links, clientX, clientY);
+      }, CLICK_DELAY);
+    });
+
+    g.on("dblclick", (event: MouseEvent) => {
+      event.stopPropagation();
+      this.clearClickTimer();
+      this.setSelected(d.data);
+      this.editNode(d.data, false);
+    });
   }
 
   /** Update the selection ring and toggle visibility, without rebuilding the DOM. */
@@ -389,6 +447,39 @@ export class MindMapRenderer {
     nodes
       .select(".omm-toggle-group")
       .style("display", (d) => (d.data === this.selected ? null : "none"));
+  }
+
+  private setSelected(node: MindNode | null) {
+    this.selected = node;
+    this.opts.onSelectionChange();
+  }
+
+  // --- Tree lookups ---
+
+  private treeOf(node: MindNode): MindTree | null {
+    const has = (n: MindNode): boolean => n === node || n.children.some(has);
+    return this.trees.find((t) => has(t.root)) ?? null;
+  }
+
+  private selectedTree(): MindTree | null {
+    if (this.selected) return this.treeOf(this.selected);
+    return this.trees[0] ?? null;
+  }
+
+  private parentOf(node: MindNode): MindNode | null {
+    const find = (n: MindNode): MindNode | null => {
+      for (const c of n.children) {
+        if (c === node) return n;
+        const deeper = find(c);
+        if (deeper) return deeper;
+      }
+      return null;
+    };
+    for (const t of this.trees) {
+      const found = find(t.root);
+      if (found) return found;
+    }
+    return null;
   }
 
   // --- Keyboard handling ---
@@ -431,25 +522,13 @@ export class MindMapRenderer {
     }
   }
 
-  private parentOf(node: MindNode): MindNode | null {
-    const find = (n: MindNode): MindNode | null => {
-      for (const c of n.children) {
-        if (c === node) return n;
-        const deeper = find(c);
-        if (deeper) return deeper;
-      }
-      return null;
-    };
-    return this.root ? find(this.root) : null;
-  }
-
   private addChild() {
     const parent = this.selected;
     if (!parent) return;
     const child = newNode("");
     parent.children.push(child);
     parent.collapsed = false;
-    this.selected = child;
+    this.setSelected(child);
     this.opts.onChange();
     this.render();
     this.editNode(child, true);
@@ -459,18 +538,25 @@ export class MindMapRenderer {
     const node = this.selected;
     if (!node) return;
     const parent = this.parentOf(node);
-    if (!parent) {
-      // Root has no sibling; fall back to adding a child.
-      this.addChild();
+    if (parent) {
+      const sibling = newNode("");
+      parent.children.splice(parent.children.indexOf(node) + 1, 0, sibling);
+      this.setSelected(sibling);
+      this.opts.onChange();
+      this.render();
+      this.editNode(sibling, true);
       return;
     }
-    const sibling = newNode("");
-    const idx = parent.children.indexOf(node);
-    parent.children.splice(idx + 1, 0, sibling);
-    this.selected = sibling;
+    // A sibling of a tree root becomes a new tree, inserted right after it.
+    const owner = this.treeOf(node);
+    const idx = this.trees.findIndex((t) => t.root === node);
+    if (idx < 0) return;
+    const newRoot = newNode("");
+    this.trees.splice(idx + 1, 0, { root: newRoot, layout: owner?.layout ?? "left-right" });
+    this.setSelected(newRoot);
     this.opts.onChange();
     this.render();
-    this.editNode(sibling, true);
+    this.editNode(newRoot, true);
   }
 
   private deleteSelected() {
@@ -479,12 +565,19 @@ export class MindMapRenderer {
 
   private removeNode(node: MindNode) {
     const parent = this.parentOf(node);
-    if (!parent) {
-      // Refuse to delete the root.
+    if (parent) {
+      parent.children.splice(parent.children.indexOf(node), 1);
+      this.setSelected(parent);
+      this.opts.onChange();
+      this.render();
       return;
     }
-    parent.children.splice(parent.children.indexOf(node), 1);
-    this.selected = parent;
+    // Deleting a tree root removes the whole tree.
+    const idx = this.trees.findIndex((t) => t.root === node);
+    if (idx < 0) return;
+    this.trees.splice(idx, 1);
+    const fallback = this.trees[idx]?.root ?? this.trees[idx - 1]?.root ?? null;
+    this.setSelected(fallback);
     this.opts.onChange();
     this.render();
   }
@@ -494,13 +587,12 @@ export class MindMapRenderer {
   /** Open an inline textarea over a node. New empty nodes are discarded if left blank. */
   private editNode(node: MindNode, isNew: boolean) {
     if (this.editing) return;
-    const point = this.lastPoints.find((p) => p.data === node);
-    if (!point) return;
-    const x = this.px(point);
-    const y = this.py(point);
+    const placed = this.placed.get(node.id);
+    if (!placed) return;
+    const { group, x, y } = placed;
     this.editing = true;
 
-    const fo = this.viewport.append("foreignObject");
+    const fo = group.append("foreignObject");
     const textarea = fo
       .append("xhtml:textarea" as any)
       .attr("class", "omm-edit-input")
@@ -513,11 +605,11 @@ export class MindMapRenderer {
       const lines = splitLines(textarea.value);
       const longest = lines.reduce((m, l) => Math.max(m, measureText(l)), 0);
       const w = Math.max(longest + NODE_PADDING_X * 2, 140);
-      const h = Math.max(NODE_MIN_HEIGHT, lines.length * LINE_HEIGHT + NODE_PADDING_Y * 2);
+      const hh = Math.max(NODE_MIN_HEIGHT, lines.length * LINE_HEIGHT + NODE_PADDING_Y * 2);
       fo.attr("x", x - w / 2)
-        .attr("y", y - h / 2)
+        .attr("y", y - hh / 2)
         .attr("width", w)
-        .attr("height", h);
+        .attr("height", hh);
     };
     resize();
     textarea.focus();
@@ -555,7 +647,7 @@ export class MindMapRenderer {
     textarea.addEventListener("blur", () => commit(true));
   }
 
-  /** Fit the whole tree into the viewport with a small margin. */
+  /** Fit all trees into the viewport with a small margin. */
   fit() {
     const node = this.svg.node();
     if (!node) return;

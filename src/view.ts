@@ -1,14 +1,7 @@
 // Custom Obsidian view that renders a Markdown file as an interactive mindmap.
 
 import { ItemView, TFile, WorkspaceLeaf, Notice, setIcon, Menu } from "obsidian";
-import {
-  Layout,
-  LinkInfo,
-  MindMapDoc,
-  parseMarkdown,
-  serializeMarkdown,
-  nextLayout,
-} from "./model";
+import { LinkInfo, MindMapDoc, parseMarkdown, serializeMarkdown } from "./model";
 import { MindMapRenderer } from "./render";
 import { exportPNG, exportPDF } from "./export";
 import type MindMapPlugin from "./main";
@@ -17,7 +10,6 @@ export const VIEW_TYPE_MINDMAP = "omm-mindmap-view";
 
 interface MindMapViewState extends Record<string, unknown> {
   file: string;
-  layout?: Layout;
 }
 
 export class MindMapView extends ItemView {
@@ -29,7 +21,6 @@ export class MindMapView extends ItemView {
   private layoutLabelEl!: HTMLElement;
   /** Last content we wrote, to distinguish our own saves from external edits. */
   private lastWritten: string | null = null;
-  private pendingLayout: Layout | null = null;
   /** Serialized snapshots of the document state before each change (for undo). */
   private undoStack: string[] = [];
   private static readonly MAX_UNDO = 100;
@@ -61,6 +52,7 @@ export class MindMapView extends ItemView {
     this.renderer = new MindMapRenderer(this.canvasEl, {
       onChange: () => void this.save(),
       onUndo: () => void this.undo(),
+      onSelectionChange: () => this.updateLayoutLabel(),
       onOpenLinks: (links, x, y) => this.openLinks(links, x, y),
     });
 
@@ -84,17 +76,13 @@ export class MindMapView extends ItemView {
   async setState(state: MindMapViewState, result: any): Promise<void> {
     if (state?.file) {
       this.filePath = state.file;
-      this.pendingLayout = state.layout ?? null;
       await this.loadFile();
     }
     await super.setState(state, result);
   }
 
   getState(): MindMapViewState {
-    return {
-      file: this.filePath ?? "",
-      layout: this.doc?.layout,
-    };
+    return { file: this.filePath ?? "" };
   }
 
   // --- Loading / saving ---
@@ -114,13 +102,8 @@ export class MindMapView extends ItemView {
     const content = await this.app.vault.read(file);
     this.lastWritten = content;
     this.undoStack = []; // history is relative to the loaded content
-    const basename = file.basename;
-    this.doc = parseMarkdown(content, basename, this.plugin.settings.defaultLayout);
-    if (this.pendingLayout) {
-      this.doc.layout = this.pendingLayout;
-      this.pendingLayout = null;
-    }
-    this.renderer?.setData(this.doc.root, this.doc.layout);
+    this.doc = parseMarkdown(content, this.plugin.settings.defaultLayout);
+    this.renderer?.setData(this.doc.trees);
     this.renderer?.render(true);
     this.renderer?.focus();
     this.updateLayoutLabel();
@@ -153,9 +136,9 @@ export class MindMapView extends ItemView {
     }
     const file = this.getFile();
     if (!file) return;
-    this.doc = parseMarkdown(snapshot, file.basename, this.plugin.settings.defaultLayout);
+    this.doc = parseMarkdown(snapshot, this.plugin.settings.defaultLayout);
     this.lastWritten = snapshot; // marks the upcoming write as our own
-    this.renderer?.setData(this.doc.root, this.doc.layout);
+    this.renderer?.setData(this.doc.trees);
     this.renderer?.render(false);
     this.renderer?.focus();
     this.updateLayoutLabel();
@@ -169,12 +152,9 @@ export class MindMapView extends ItemView {
 
     this.layoutLabelEl = bar.createSpan({ cls: "omm-layout-label" });
 
-    this.makeButton(bar, "git-fork", "Toggle layout (top-down / left-right)", () => {
-      if (!this.doc) return;
-      this.doc.layout = nextLayout(this.doc.layout);
-      this.renderer?.setLayout(this.doc.layout);
+    this.makeButton(bar, "git-fork", "Toggle layout of selected tree", () => {
+      this.renderer?.toggleSelectedLayout();
       this.updateLayoutLabel();
-      void this.save();
     });
 
     this.makeButton(bar, "unfold-vertical", "Expand all", () => this.renderer?.expandAll());
@@ -203,9 +183,9 @@ export class MindMapView extends ItemView {
   }
 
   private updateLayoutLabel(): void {
-    if (this.layoutLabelEl && this.doc) {
-      this.layoutLabelEl.setText(this.doc.layout === "top-down" ? "Top-down" : "Left-right");
-    }
+    if (!this.layoutLabelEl) return;
+    const layout = this.renderer?.getSelectedLayout();
+    this.layoutLabelEl.setText(layout === "top-down" ? "Top-down" : layout ? "Left-right" : "");
   }
 
   private async doExport(kind: "png" | "pdf"): Promise<void> {

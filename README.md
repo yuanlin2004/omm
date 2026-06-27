@@ -4,7 +4,8 @@ An Obsidian plugin that renders any Markdown outline as an interactive mindmap, 
 
 ## Features
 
-- **Two layouts** — top-down and left-right, toggled from the toolbar. The choice is stored per file in front-matter (`mindmap-layout`).
+- **Multiple trees per file** — every first-level bullet is its own tree, stacked top to bottom. Each tree has its own layout.
+- **Two layouts** — top-down and left-right, toggled per tree from the toolbar. Layouts are stored as a per-tree list in front-matter (`mindmap-layout`).
 - **View switching** — open a Markdown file as a mindmap, or jump back to the Markdown editor, without leaving the leaf.
 - **Markdown is the source of truth** — the document is a nested bullet list plus a small front-matter block. Edits in either view stay in sync.
 - **Interaction** — pan (drag), zoom (wheel), collapse/expand branches, select a node, and edit structure with the keyboard.
@@ -32,8 +33,8 @@ A collapsed node is drawn with a faint "stacked card" behind it to signal hidden
 | Key | Action |
 | --- | --- |
 | `Tab` / `Insert` | Add child to the selected node |
-| `Enter` | Add a sibling after the selected node |
-| `Delete` / `Backspace` | Remove the selected node (and its subtree) |
+| `Enter` | Add a sibling after the selected node (a sibling of a root starts a new tree) |
+| `Delete` / `Backspace` | Remove the selected node (deleting a root removes that whole tree) |
 | `F2` / double-click | Edit the selected node |
 | `Shift+Enter` | Insert a line break while editing (`Enter` commits) |
 | `Cmd/Ctrl+Z` | Undo the last change |
@@ -42,7 +43,7 @@ A collapsed node is drawn with a faint "stacked card" behind it to signal hidden
 
 ````markdown
 ---
-mindmap-layout: top-down
+mindmap-layout: [top-down, left-right]
 ---
 
 - Project
@@ -51,16 +52,20 @@ mindmap-layout: top-down
     - Surveys
   - Design
   - Build
+- Backlog
+  - Bugs
+  - Ideas
 ````
 
-- A single top-level bullet becomes the root node.
-- Zero or many top-level bullets are wrapped under a synthetic root named after the file.
+- **Each first-level bullet is a separate tree**, rendered top to bottom (the example above has two: *Project* and *Backlog*). There is no file-name root.
+- `mindmap-layout` is a list with one style per tree, in order. If there are more trees than entries, the extra trees use the default (**left-right**). A bare value like `mindmap-layout: top-down` is accepted for a single tree.
+- Toggling a tree's layout (toolbar) updates its entry in the list.
 - Unknown front-matter keys are preserved on save.
 
 ## Usage
 
 - Ribbon icon **Open as mindmap**, the command **"Open current file as mindmap"**, or the file's right-click menu.
-- In the mindmap toolbar: toggle layout, **expand all**, fit to view, export PNG, export PDF, and **Open as Markdown**.
+- In the mindmap toolbar: toggle the **selected tree's** layout, **expand all**, fit to view, export PNG, export PDF, and **Open as Markdown**. The label shows the selected tree's layout.
 - Set the default layout for new files in the plugin's settings tab.
 
 ## Development

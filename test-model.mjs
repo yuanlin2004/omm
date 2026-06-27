@@ -19,10 +19,10 @@ function check(name, cond) {
   else { fail++; console.log("  FAIL-", name); }
 }
 
-// 1. Single-root tree round-trips.
+// 1. Single tree round-trips; layout comes from the front-matter list.
 {
   const md = `---
-mindmap-layout: left-right
+mindmap-layout: [left-right]
 ---
 
 - Root
@@ -30,87 +30,99 @@ mindmap-layout: left-right
     - Grandchild
   - Child B
 `;
-  const doc = m.parseMarkdown(md, "fallback", "top-down");
-  check("layout from front-matter", doc.layout === "left-right");
-  check("single root not synthetic", doc.syntheticRoot === false);
-  check("root text", doc.root.text === "Root");
-  check("root has 2 children", doc.root.children.length === 2);
-  check("nested grandchild", doc.root.children[0].children[0].text === "Grandchild");
+  const doc = m.parseMarkdown(md, "top-down");
+  check("one tree", doc.trees.length === 1);
+  check("tree layout from front-matter", doc.trees[0].layout === "left-right");
+  check("root text", doc.trees[0].root.text === "Root");
+  check("root has 2 children", doc.trees[0].root.children.length === 2);
+  check("nested grandchild", doc.trees[0].root.children[0].children[0].text === "Grandchild");
 
   const out = m.serializeMarkdown(doc, md);
-  const reparsed = m.parseMarkdown(out, "fallback", "top-down");
-  check("round-trip preserves structure", reparsed.root.children[0].children[0].text === "Grandchild");
-  check("round-trip preserves layout", reparsed.layout === "left-right");
+  const reparsed = m.parseMarkdown(out, "top-down");
+  check("round-trip preserves structure", reparsed.trees[0].root.children[0].children[0].text === "Grandchild");
+  check("round-trip preserves layout", reparsed.trees[0].layout === "left-right");
 }
 
-// 2. Multiple top-level bullets → synthetic root named after file.
+// 2. Each first-level bullet becomes its own tree (no synthetic file-name root).
 {
-  const md = `- One\n- Two\n  - Two-A\n`;
-  const doc = m.parseMarkdown(md, "MyFile", "top-down");
-  check("multi-top synthetic", doc.syntheticRoot === true);
-  check("synthetic root uses fallback name", doc.root.text === "MyFile");
-  check("synthetic root has 2 children", doc.root.children.length === 2);
-  check("default layout applied", doc.layout === "top-down");
+  const md = `- One\n  - One-A\n- Two\n  - Two-A\n- Three\n`;
+  const doc = m.parseMarkdown(md, "left-right");
+  check("three trees", doc.trees.length === 3);
+  check("first tree root is One", doc.trees[0].root.text === "One");
+  check("second tree root is Two", doc.trees[1].root.text === "Two");
+  check("tree keeps its children", doc.trees[0].root.children[0].text === "One-A");
+  check("no file-name root", doc.trees.every((t) => t.root.text !== "f"));
 
-  // Serializing a synthetic root writes children at top level (no wrapper bullet).
   const out = m.serializeMarkdown(doc);
-  const reparsed = m.parseMarkdown(out, "MyFile", "top-down");
-  check("synthetic round-trip stays synthetic", reparsed.syntheticRoot === true);
-  check("synthetic round-trip keeps 2 tops", reparsed.root.children.length === 2);
+  const reparsed = m.parseMarkdown(out, "left-right");
+  check("round-trip keeps 3 trees", reparsed.trees.length === 3);
 }
 
-// 3. Tab indentation and mixed bullet markers.
+// 3. Per-tree layout list; extra trees fall back to the default.
 {
-  const md = `- Root\n\t- Tabbed child\n\t* Star child\n`;
-  const doc = m.parseMarkdown(md, "f", "top-down");
-  check("tab indent nests", doc.root.children.length === 2);
-  check("star marker parsed", doc.root.children[1].text === "Star child");
+  const md = `---\nmindmap-layout: [top-down, left-right]\n---\n\n- A\n- B\n- C\n`;
+  const doc = m.parseMarkdown(md, "left-right");
+  check("tree 0 from list", doc.trees[0].layout === "top-down");
+  check("tree 1 from list", doc.trees[1].layout === "left-right");
+  check("tree 2 falls back to default (left-right)", doc.trees[2].layout === "left-right");
+
+  // Serialization writes the full per-tree list.
+  const out = m.serializeMarkdown(doc);
+  check("serializes layout list", out.includes("mindmap-layout: [top-down, left-right, left-right]"));
+  const reparsed = m.parseMarkdown(out, "left-right");
+  check("layout list round-trips", reparsed.trees.map((t) => t.layout).join() === "top-down,left-right,left-right");
 }
 
-// 4. Unknown front-matter keys are preserved.
+// 3b. A bare (non-list) layout value still works for a single tree.
 {
-  const md = `---\ntitle: Hello\nmindmap-layout: top-down\n---\n\n- A\n`;
-  const doc = m.parseMarkdown(md, "f", "top-down");
-  const out = m.serializeMarkdown(doc, md);
+  const doc = m.parseMarkdown(`---\nmindmap-layout: top-down\n---\n\n- A\n`, "left-right");
+  check("bare single layout value", doc.trees[0].layout === "top-down");
+}
+
+// 4. Tab indentation, mixed markers, and preserved unknown front-matter keys.
+{
+  const doc = m.parseMarkdown(`- Root\n\t- Tabbed child\n\t* Star child\n`, "left-right");
+  check("tab indent nests", doc.trees[0].root.children.length === 2);
+  check("star marker parsed", doc.trees[0].root.children[1].text === "Star child");
+
+  const md = `---\ntitle: Hello\nmindmap-layout: [top-down]\n---\n\n- A\n`;
+  const out = m.serializeMarkdown(m.parseMarkdown(md, "left-right"), md);
   check("preserves unknown front-matter key", out.includes("title: Hello"));
   check("emits layout once", (out.match(/mindmap-layout:/g) || []).length === 1);
 }
 
-// 5. Programmatic edits (add child / sibling, then an empty new node) round-trip.
+// 5. Programmatic edits (add child / sibling, an empty node) round-trip.
 {
-  const doc = m.parseMarkdown(`- Root\n  - A\n`, "f", "top-down");
-  const root = doc.root;
-  // Simulate "add child" to A and "add sibling" to A.
-  const a = root.children[0];
-  a.children.push(m.newNode("A-child"));
+  const doc = m.parseMarkdown(`- Root\n  - A\n`, "left-right");
+  const root = doc.trees[0].root;
+  root.children[0].children.push(m.newNode("A-child"));
   root.children.push(m.newNode("B"));
-  // Simulate a freshly created, still-empty node.
-  root.children.push(m.newNode(""));
+  root.children.push(m.newNode("")); // freshly created, still empty
 
-  const out = m.serializeMarkdown(doc);
-  const reparsed = m.parseMarkdown(out, "f", "top-down");
-  check("added child persists", reparsed.root.children[0].children[0].text === "A-child");
-  check("added sibling persists", reparsed.root.children[1].text === "B");
-  check("empty node round-trips as empty", reparsed.root.children[2].text === "");
-  check("child count after edits", reparsed.root.children.length === 3);
+  const reparsed = m.parseMarkdown(m.serializeMarkdown(doc), "left-right");
+  const r = reparsed.trees[0].root;
+  check("added child persists", r.children[0].children[0].text === "A-child");
+  check("added sibling persists", r.children[1].text === "B");
+  check("empty node round-trips as empty", r.children[2].text === "");
+  check("child count after edits", r.children.length === 3);
 }
 
 // 6. Multi-line node text encodes as <br> and round-trips to newlines.
 {
-  const doc = m.parseMarkdown(`- Root\n`, "f", "top-down");
-  doc.root.children.push(m.newNode("line one\nline two\nline three"));
+  const doc = m.parseMarkdown(`- Root\n`, "left-right");
+  doc.trees[0].root.children.push(m.newNode("line one\nline two\nline three"));
   const out = m.serializeMarkdown(doc);
   check("newlines encoded as <br>", out.includes("- line one<br>line two<br>line three"));
   check("no raw newline inside bullet", !/- line one\n\s*line two/.test(out));
 
-  const reparsed = m.parseMarkdown(out, "f", "top-down");
-  check("<br> decodes back to newlines", reparsed.root.children[0].text === "line one\nline two\nline three");
+  const reparsed = m.parseMarkdown(out, "left-right");
+  check("<br> decodes back to newlines", reparsed.trees[0].root.children[0].text === "line one\nline two\nline three");
 }
 
 // 7. Existing <br> / <br/> in source Markdown is read as a line break.
 {
-  const doc = m.parseMarkdown(`- A<br/>B<br>C\n`, "f", "top-down");
-  check("mixed <br/> and <br> decode", doc.root.text === "A\nB\nC");
+  const doc = m.parseMarkdown(`- A<br/>B<br>C\n`, "left-right");
+  check("mixed <br/> and <br> decode", doc.trees[0].root.text === "A\nB\nC");
 }
 
 // 8. Link extraction: wikilinks, aliases, headings, markdown + external links.
