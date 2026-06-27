@@ -5,7 +5,7 @@ import { hierarchy, tree, HierarchyPointNode } from "d3-hierarchy";
 import { select, Selection } from "d3-selection";
 import { zoom, zoomIdentity, ZoomBehavior } from "d3-zoom";
 import { linkVertical, linkHorizontal } from "d3-shape";
-import { Layout, MindNode, newNode } from "./model";
+import { Layout, MindNode, newNode, extractLinks, segmentText, displayLine, LinkInfo } from "./model";
 
 const NODE_MIN_HEIGHT = 30;
 const LINE_HEIGHT = 18;
@@ -19,6 +19,7 @@ const LEVEL_GAP_TD = 45; // gap between level edges (top-down)
 const LEVEL_GAP_LR = 70; // gap between level edges (left-right)
 const SIBLING_GAP = 18; // gap between adjacent sibling edges
 const BG_COLOR = "#ffffff";
+const LINK_COLOR = "#2563eb";
 const PALETTE = ["#4c6ef5", "#37b24d", "#f59f00", "#e8590c", "#ae3ec9", "#1098ad", "#e64980"];
 
 function splitLines(text: string): string[] {
@@ -63,9 +64,10 @@ function measureText(line: string): number {
   return heuristicWidth(line);
 }
 
+// Node size is based on the *displayed* text (links shown as their labels).
 function nodeDims(text: string): { w: number; h: number; lines: string[] } {
   const lines = splitLines(text);
-  const longest = lines.reduce((m, l) => Math.max(m, measureText(l)), 0);
+  const longest = lines.reduce((m, l) => Math.max(m, measureText(displayLine(l))), 0);
   const w = Math.max(MIN_NODE_WIDTH, longest + NODE_PADDING_X * 2);
   const h = Math.max(NODE_MIN_HEIGHT, lines.length * LINE_HEIGHT + NODE_PADDING_Y * 2);
   return { w, h, lines };
@@ -76,7 +78,11 @@ interface RendererOptions {
   onChange: () => void;
   /** Called when the user requests undo (Cmd/Ctrl+Z). */
   onUndo: () => void;
+  /** Called to open the link(s) in a node; `x`/`y` are screen coords for a picker. */
+  onOpenLinks: (links: LinkInfo[], x: number, y: number) => void;
 }
+
+const CLICK_DELAY = 250; // ms to wait for a possible double-click before opening a link
 
 export class MindMapRenderer {
   private container: HTMLElement;
@@ -95,6 +101,8 @@ export class MindMapRenderer {
   private lastPoints: HierarchyPointNode<MindNode>[] = [];
   /** Depth-axis coordinate per level, packed by the max node extent at each depth. */
   private levelOffset: number[] = [];
+  /** Pending single-click action, deferred so a double-click can cancel it. */
+  private clickTimer: number | null = null;
 
   constructor(container: HTMLElement, opts: RendererOptions) {
     this.container = container;
@@ -119,6 +127,7 @@ export class MindMapRenderer {
     // Use mousedown rather than click: d3-zoom can suppress the background click.
     this.svg.on("mousedown", (event: MouseEvent) => {
       if (!(event.target as Element).closest(".omm-node")) {
+        this.clearClickTimer();
         this.selected = null;
         this.highlightSelection();
       }
@@ -181,6 +190,7 @@ export class MindMapRenderer {
   /** Render the tree. Pass `fitView` to recenter; structural edits keep the current view. */
   render(fitView = false) {
     if (!this.root) return;
+    this.clearClickTimer();
     this.viewport.selectAll("*").remove();
 
     // Breadth = the sibling-spacing axis; depth = the parent→child axis.
@@ -291,12 +301,17 @@ export class MindMapRenderer {
 
       const startDy = -((lines.length - 1) / 2) * LINE_HEIGHT;
       lines.forEach((line, idx) => {
-        text
-          .append("tspan")
-          .attr("x", 0)
-          .attr("dy", idx === 0 ? startDy : LINE_HEIGHT)
-          .attr("dominant-baseline", "central")
-          .text(line);
+        // Each line is centered as a chunk; the first segment carries x/dy and the
+        // rest flow inline. Link segments are shown as labels, underlined.
+        segmentText(line).forEach((seg, sidx) => {
+          const tspan = text.append("tspan").attr("dominant-baseline", "central").text(seg.text);
+          if (sidx === 0) {
+            tspan.attr("x", 0).attr("dy", idx === 0 ? startDy : LINE_HEIGHT);
+          }
+          if (seg.link) {
+            tspan.attr("fill", LINK_COLOR).attr("text-decoration", "underline");
+          }
+        });
       });
 
       // Collapse/expand affordance, shown only while the node is selected.
@@ -333,13 +348,28 @@ export class MindMapRenderer {
 
       g.on("click", (event: MouseEvent) => {
         event.stopPropagation();
-        this.selected = d.data;
-        this.container.focus();
-        this.highlightSelection();
+        this.clearClickTimer();
+        if (this.selected !== d.data) {
+          // First click selects the node.
+          this.selected = d.data;
+          this.container.focus();
+          this.highlightSelection();
+          return;
+        }
+        // Already selected: a further click opens its link(s), deferred so that a
+        // double-click (to edit) can cancel it first.
+        const links = extractLinks(d.data.text);
+        if (links.length === 0) return;
+        const { clientX, clientY } = event;
+        this.clickTimer = window.setTimeout(() => {
+          this.clickTimer = null;
+          this.opts.onOpenLinks(links, clientX, clientY);
+        }, CLICK_DELAY);
       });
 
       g.on("dblclick", (event: MouseEvent) => {
         event.stopPropagation();
+        this.clearClickTimer();
         this.selected = d.data;
         this.editNode(d.data, false);
       });
@@ -477,11 +507,13 @@ export class MindMapRenderer {
       .property("value", node.text)
       .node() as HTMLTextAreaElement;
 
-    // Size the editor to the content and keep it centered on the node.
+    // Size the editor to the *raw* content (the textarea shows raw Markdown, not
+    // the rendered link labels), keeping it centered on the node.
     const resize = () => {
-      const d = nodeDims(textarea.value);
-      const w = Math.max(d.w, 140);
-      const h = Math.max(d.h, NODE_MIN_HEIGHT);
+      const lines = splitLines(textarea.value);
+      const longest = lines.reduce((m, l) => Math.max(m, measureText(l)), 0);
+      const w = Math.max(longest + NODE_PADDING_X * 2, 140);
+      const h = Math.max(NODE_MIN_HEIGHT, lines.length * LINE_HEIGHT + NODE_PADDING_Y * 2);
       fo.attr("x", x - w / 2)
         .attr("y", y - h / 2)
         .attr("width", w)
@@ -546,7 +578,15 @@ export class MindMapRenderer {
     this.svg.call(this.zoomBehavior.transform as any, transform);
   }
 
+  private clearClickTimer() {
+    if (this.clickTimer !== null) {
+      window.clearTimeout(this.clickTimer);
+      this.clickTimer = null;
+    }
+  }
+
   destroy() {
+    this.clearClickTimer();
     this.svg.remove();
   }
 }

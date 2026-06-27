@@ -113,6 +113,40 @@ mindmap-layout: left-right
   check("mixed <br/> and <br> decode", doc.root.text === "A\nB\nC");
 }
 
+// 8. Link extraction: wikilinks, aliases, headings, markdown + external links.
+{
+  const a = m.extractLinks("see [[Note A]] and [[Path/Note B|Alias]]");
+  check("two wikilinks found", a.length === 2);
+  check("wikilink href", a[0].href === "Note A");
+  check("wikilink alias label", a[1].label === "Alias" && a[1].href === "Path/Note B");
+  check("wikilinks are internal", a.every((l) => !l.external));
+
+  const b = m.extractLinks("[[Topic#Section]]");
+  check("wikilink keeps heading", b[0].href === "Topic#Section");
+
+  const c = m.extractLinks("[docs](https://example.com) and [local](Notes/Foo.md)");
+  check("markdown external link", c[0].external === true && c[0].href === "https://example.com");
+  check("markdown internal link", c[1].external === false && c[1].href === "Notes/Foo.md");
+
+  check("no links → empty array", m.extractLinks("plain text").length === 0);
+}
+
+// 9. Display labels: [[Note]] → Note, alias shown, path hidden, mixed segments.
+{
+  check("plain wikilink shows note name", m.displayLine("[[Note]]") === "Note");
+  check("path is hidden, basename shown", m.displayLine("[[Folder/Sub/Note]]") === "Note");
+  check("alias is shown instead of path", m.displayLine("[[Folder/Note|My Alias]]") === "My Alias");
+  check("markdown link shows label", m.displayLine("[Docs](https://x.com)") === "Docs");
+
+  const segs = m.segmentText("see [[A|Alias]] now");
+  check("segments split plain/link/plain", segs.length === 3);
+  check("first segment plain", segs[0].link === false && segs[0].text === "see ");
+  check("middle segment is link label", segs[1].link === true && segs[1].text === "Alias");
+  check("last segment plain", segs[2].link === false && segs[2].text === " now");
+
+  check("no-link line is one plain segment", m.segmentText("hello").length === 1);
+}
+
 rmSync(".tmp-model.mjs", { force: true });
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -9,6 +9,7 @@ An Obsidian plugin that renders any Markdown outline as an interactive mindmap, 
 - **Markdown is the source of truth** — the document is a nested bullet list plus a small front-matter block. Edits in either view stay in sync.
 - **Interaction** — pan (drag), zoom (wheel), collapse/expand branches, select a node, and edit structure with the keyboard.
 - **Multi-line nodes** — a node can hold several lines; line breaks are stored in Markdown as `<br>`.
+- **Open links** — a node containing `[[wikilinks]]` or `[markdown](links)` opens the target on a follow-up click (first click selects, click again opens). Nodes with several links show a picker; external URLs open in the browser.
 - **Undo** — `Cmd/Ctrl+Z` reverts the last change (rename, add, delete, layout toggle).
 - **Export** — save the current mindmap as **PNG** or **PDF**.
 

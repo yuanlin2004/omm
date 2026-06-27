@@ -1,8 +1,9 @@
 // Custom Obsidian view that renders a Markdown file as an interactive mindmap.
 
-import { ItemView, TFile, WorkspaceLeaf, Notice, setIcon } from "obsidian";
+import { ItemView, TFile, WorkspaceLeaf, Notice, setIcon, Menu } from "obsidian";
 import {
   Layout,
+  LinkInfo,
   MindMapDoc,
   parseMarkdown,
   serializeMarkdown,
@@ -60,6 +61,7 @@ export class MindMapView extends ItemView {
     this.renderer = new MindMapRenderer(this.canvasEl, {
       onChange: () => void this.save(),
       onUndo: () => void this.undo(),
+      onOpenLinks: (links, x, y) => this.openLinks(links, x, y),
     });
 
     // Reload when the file changes externally (not from our own save).
@@ -217,6 +219,36 @@ export class MindMapView extends ItemView {
     } catch (e) {
       new Notice(`OMM: export failed — ${(e as Error).message}`);
     }
+  }
+
+  // --- Link opening ---
+
+  private openLinks(links: LinkInfo[], x: number, y: number): void {
+    if (links.length === 0) return;
+    if (links.length === 1) {
+      this.openLink(links[0]);
+      return;
+    }
+    // Multiple links: let the user pick which to open.
+    const menu = new Menu();
+    for (const link of links) {
+      menu.addItem((item) =>
+        item
+          .setTitle(link.label || link.href)
+          .setIcon(link.external ? "external-link" : "file")
+          .onClick(() => this.openLink(link))
+      );
+    }
+    menu.showAtPosition({ x, y });
+  }
+
+  private openLink(link: LinkInfo): void {
+    if (link.external) {
+      window.open(link.href, "_blank");
+      return;
+    }
+    // Open the note in a new tab so the mindmap stays put.
+    void this.app.workspace.openLinkText(link.href, this.filePath ?? "", true);
   }
 
   private async openAsMarkdown(): Promise<void> {
