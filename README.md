@@ -8,10 +8,24 @@ An Obsidian plugin that renders any Markdown outline as an interactive mindmap, 
 - **View switching** — open a Markdown file as a mindmap, or jump back to the Markdown editor, without leaving the leaf.
 - **Markdown is the source of truth** — the document is a nested bullet list plus a small front-matter block. Edits in either view stay in sync.
 - **Interaction** — pan (drag), zoom (wheel), collapse/expand branches, select a node, and edit structure with the keyboard.
+- **Space-efficient layout** — siblings and levels are packed by each node's actual size, so one wide node no longer spreads the whole tree apart. Node boxes size to their text, including full-width CJK characters.
 - **Multi-line nodes** — a node can hold several lines; line breaks are stored in Markdown as `<br>`.
-- **Open links** — a node containing `[[wikilinks]]` or `[markdown](links)` opens the target on a follow-up click (first click selects, click again opens). Nodes with several links show a picker; external URLs open in the browser.
+- **Links shown as labels** — `[[Folder/Note|Alias]]` renders as an underlined **Alias** (or the note's basename — never the full path); `[Label](url)` renders as **Label**. The raw Markdown is preserved for editing and storage.
+- **Open links** — on a selected node, clicking again opens its link. Nodes with several links show a picker; internal notes open in a new tab, external URLs open in the browser.
 - **Undo** — `Cmd/Ctrl+Z` reverts the last change (rename, add, delete, layout toggle).
 - **Export** — save the current mindmap as **PNG** or **PDF**.
+
+### Mouse
+
+| Action | Result |
+| --- | --- |
+| Click a node | Select it (shows its collapse/expand toggle) |
+| Click a selected node | Open its link, if any (picker when there are several) |
+| Double-click a node | Edit its text |
+| Click the toggle (○) | Collapse / expand the node's children |
+| Drag background | Pan · **wheel** zooms · click background to deselect |
+
+A collapsed node is drawn with a faint "stacked card" behind it to signal hidden children. The collapse/expand toggle appears only on the selected node.
 
 ### Keyboard
 
@@ -46,7 +60,8 @@ mindmap-layout: top-down
 ## Usage
 
 - Ribbon icon **Open as mindmap**, the command **"Open current file as mindmap"**, or the file's right-click menu.
-- In the mindmap toolbar: toggle layout, fit to view, export PNG, export PDF, and **Open as Markdown**.
+- In the mindmap toolbar: toggle layout, **expand all**, fit to view, export PNG, export PDF, and **Open as Markdown**.
+- Set the default layout for new files in the plugin's settings tab.
 
 ## Development
 
@@ -54,7 +69,7 @@ mindmap-layout: top-down
 npm install
 npm run dev      # watch build → main.js
 npm run build    # typecheck + production bundle
-node test-model.mjs   # parse/serialize round-trip tests
+node test-model.mjs   # model tests (round-trip, links, display labels)
 ```
 
 To try it in a vault, copy `main.js`, `manifest.json`, and `styles.css` into
