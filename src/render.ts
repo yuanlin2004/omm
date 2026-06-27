@@ -9,13 +9,15 @@ import { Layout, MindNode, newNode } from "./model";
 
 const NODE_MIN_HEIGHT = 30;
 const LINE_HEIGHT = 18;
-const CHAR_WIDTH = 8;
+const FONT_SIZE = 14;
+const NARROW_CHAR_WIDTH = 8; // heuristic advance for Latin chars
+const WIDE_CHAR_WIDTH = FONT_SIZE; // heuristic advance for full-width (CJK) chars
 const NODE_PADDING_X = 14;
 const NODE_PADDING_Y = 8;
 const MIN_NODE_WIDTH = 40;
-const LEVEL_GAP_TD = 60; // extra vertical gap between levels (top-down)
-const LEVEL_GAP_LR = 60; // extra horizontal gap between levels (left-right)
-const SIBLING_GAP = 16;
+const LEVEL_GAP_TD = 45; // gap between level edges (top-down)
+const LEVEL_GAP_LR = 70; // gap between level edges (left-right)
+const SIBLING_GAP = 18; // gap between adjacent sibling edges
 const BG_COLOR = "#ffffff";
 const PALETTE = ["#4c6ef5", "#37b24d", "#f59f00", "#e8590c", "#ae3ec9", "#1098ad", "#e64980"];
 
@@ -23,10 +25,48 @@ function splitLines(text: string): string[] {
   return text.length ? text.split("\n") : [""];
 }
 
+/** True for full-width characters (CJK, Hangul, fullwidth forms) that need ~1em. */
+function isWideChar(cp: number): boolean {
+  return (
+    (cp >= 0x1100 && cp <= 0x115f) || // Hangul Jamo
+    (cp >= 0x2e80 && cp <= 0xa4cf) || // CJK radicals … Yi
+    (cp >= 0xac00 && cp <= 0xd7a3) || // Hangul syllables
+    (cp >= 0xf900 && cp <= 0xfaff) || // CJK compatibility ideographs
+    (cp >= 0xfe30 && cp <= 0xfe4f) || // CJK compatibility forms
+    (cp >= 0xff00 && cp <= 0xff60) || // fullwidth forms
+    (cp >= 0xffe0 && cp <= 0xffe6) ||
+    (cp >= 0x20000 && cp <= 0x3fffd) // CJK extension B+
+  );
+}
+
+function heuristicWidth(line: string): number {
+  let w = 0;
+  for (const ch of line) {
+    w += isWideChar(ch.codePointAt(0) ?? 0) ? WIDE_CHAR_WIDTH : NARROW_CHAR_WIDTH;
+  }
+  return w;
+}
+
+// Prefer real font metrics (handles CJK and proportional fonts); fall back to the
+// per-character heuristic if a canvas 2D context isn't available.
+let measureCtx: CanvasRenderingContext2D | null | undefined;
+function measureText(line: string): number {
+  if (measureCtx === undefined) {
+    try {
+      measureCtx = document.createElement("canvas").getContext("2d");
+      if (measureCtx) measureCtx.font = `${FONT_SIZE}px sans-serif`;
+    } catch {
+      measureCtx = null;
+    }
+  }
+  if (measureCtx) return measureCtx.measureText(line).width;
+  return heuristicWidth(line);
+}
+
 function nodeDims(text: string): { w: number; h: number; lines: string[] } {
   const lines = splitLines(text);
-  const longest = lines.reduce((m, l) => Math.max(m, l.length), 0);
-  const w = Math.max(MIN_NODE_WIDTH, longest * CHAR_WIDTH + NODE_PADDING_X * 2);
+  const longest = lines.reduce((m, l) => Math.max(m, measureText(l)), 0);
+  const w = Math.max(MIN_NODE_WIDTH, longest + NODE_PADDING_X * 2);
   const h = Math.max(NODE_MIN_HEIGHT, lines.length * LINE_HEIGHT + NODE_PADDING_Y * 2);
   return { w, h, lines };
 }
@@ -53,6 +93,8 @@ export class MindMapRenderer {
   private selected: MindNode | null = null;
   /** Last laid-out points, used to locate a node's on-screen position for editing. */
   private lastPoints: HierarchyPointNode<MindNode>[] = [];
+  /** Depth-axis coordinate per level, packed by the max node extent at each depth. */
+  private levelOffset: number[] = [];
 
   constructor(container: HTMLElement, opts: RendererOptions) {
     this.container = container;
@@ -127,12 +169,13 @@ export class MindMapRenderer {
     this.container.focus();
   }
 
-  // Axis mapping: in left-right layout, depth runs horizontally.
+  // Axis mapping: `d.x` is the breadth (sibling) position from the tree layout;
+  // the depth position comes from `levelOffset`. In left-right, depth runs horizontally.
   private px(d: HierarchyPointNode<MindNode>): number {
-    return this.layout === "top-down" ? d.x : d.y;
+    return this.layout === "top-down" ? d.x : this.levelOffset[d.depth];
   }
   private py(d: HierarchyPointNode<MindNode>): number {
-    return this.layout === "top-down" ? d.y : d.x;
+    return this.layout === "top-down" ? this.levelOffset[d.depth] : d.x;
   }
 
   /** Render the tree. Pass `fitView` to recenter; structural edits keep the current view. */
@@ -140,19 +183,37 @@ export class MindMapRenderer {
     if (!this.root) return;
     this.viewport.selectAll("*").remove();
 
-    const max = this.maxDims(this.root);
+    // Breadth = the sibling-spacing axis; depth = the parent→child axis.
+    const breadthExtent = (text: string) =>
+      this.layout === "top-down" ? nodeDims(text).w : nodeDims(text).h;
+    const depthExtent = (text: string) =>
+      this.layout === "top-down" ? nodeDims(text).h : nodeDims(text).w;
 
     const h = hierarchy(this.root, (d) => (d.collapsed ? null : d.children));
-    const layoutFn = tree<MindNode>();
-    if (this.layout === "top-down") {
-      layoutFn.nodeSize([max.w + SIBLING_GAP, max.h + LEVEL_GAP_TD]);
-    } else {
-      layoutFn.nodeSize([max.h + SIBLING_GAP, max.w + LEVEL_GAP_LR]);
-    }
-    const rootPoint = layoutFn(h);
+    // nodeSize is [1, 1] so `separation` returns pixels: pack each sibling pair by
+    // their real sizes instead of spacing the whole tree by the single largest node.
+    const rootPoint = tree<MindNode>()
+      .nodeSize([1, 1])
+      .separation((a, b) => {
+        const gap = (breadthExtent(a.data.text) + breadthExtent(b.data.text)) / 2 + SIBLING_GAP;
+        return a.parent === b.parent ? gap : gap + SIBLING_GAP;
+      })(h);
     const nodes = rootPoint.descendants();
     this.lastPoints = nodes;
     const links = rootPoint.links();
+
+    // Pack each level by the widest/tallest node actually at that depth.
+    const maxDepth = nodes.reduce((m, n) => Math.max(m, n.depth), 0);
+    const extentAt: number[] = new Array(maxDepth + 1).fill(0);
+    for (const n of nodes) {
+      extentAt[n.depth] = Math.max(extentAt[n.depth], depthExtent(n.data.text));
+    }
+    const levelGap = this.layout === "top-down" ? LEVEL_GAP_TD : LEVEL_GAP_LR;
+    const levelOffset: number[] = new Array(maxDepth + 1).fill(0);
+    for (let d = 1; d <= maxDepth; d++) {
+      levelOffset[d] = levelOffset[d - 1] + extentAt[d - 1] / 2 + levelGap + extentAt[d] / 2;
+    }
+    this.levelOffset = levelOffset;
 
     const linkGen =
       this.layout === "top-down"
@@ -483,20 +544,6 @@ export class MindMapRenderer {
     const ty = fullHeight / 2 - scale * (bounds.y + bounds.height / 2);
     const transform = zoomIdentity.translate(tx, ty).scale(scale);
     this.svg.call(this.zoomBehavior.transform as any, transform);
-  }
-
-  private maxDims(node: MindNode): { w: number; h: number } {
-    const self = nodeDims(node.text);
-    let w = self.w;
-    let h = self.h;
-    if (!node.collapsed) {
-      for (const c of node.children) {
-        const d = this.maxDims(c);
-        w = Math.max(w, d.w);
-        h = Math.max(h, d.h);
-      }
-    }
-    return { w, h };
   }
 
   destroy() {
