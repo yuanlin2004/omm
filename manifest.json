@@ -1,7 +1,7 @@
 {
   "id": "omm-mindmap",
   "name": "OMM MindMap",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "minAppVersion": "1.4.0",
   "description": "Create interactive mindmaps using simple markdown outlines. Top-down and left-right layouts, view switching, and PNG/PDF export.",
   "author": "Yuan Lin",
