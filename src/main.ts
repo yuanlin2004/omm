@@ -1,13 +1,4 @@
-import {
-  Plugin,
-  WorkspaceLeaf,
-  TFile,
-  Menu,
-  PluginSettingTab,
-  Setting,
-  App,
-  Notice,
-} from "obsidian";
+import { Plugin, TFile, Menu, PluginSettingTab, Setting, App, Notice } from "obsidian";
 import { Layout, DEFAULT_LAYOUT } from "./model";
 import { MindMapView, VIEW_TYPE_MINDMAP } from "./view";
 
@@ -35,12 +26,12 @@ export default class MindMapPlugin extends Plugin {
 
     this.addCommand({
       id: "open-as-mindmap",
-      name: "Open current file as OMM mindmap",
+      name: "Open current file as mindmap",
       checkCallback: (checking: boolean) => {
         const file = this.app.workspace.getActiveFile();
-        const ok = !!file && file.extension === "md";
-        if (ok && !checking) void this.openAsMindmap(file as TFile);
-        return ok;
+        if (!file || file.extension !== "md") return false;
+        if (!checking) void this.openAsMindmap(file);
+        return true;
       },
     });
 
@@ -76,7 +67,8 @@ export default class MindMapPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const data = (await this.loadData()) as Partial<MindMapSettings> | null;
+    this.settings = { ...DEFAULT_SETTINGS, ...(data ?? {}) };
   }
 
   async saveSettings(): Promise<void> {

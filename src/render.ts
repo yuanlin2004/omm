@@ -3,9 +3,9 @@
 // pan/zoomable canvas. Supports collapse/expand, multi-line rename, create/delete, undo,
 // and opening links.
 
-import { hierarchy, tree, HierarchyPointNode } from "d3-hierarchy";
+import { hierarchy, tree, HierarchyPointNode, HierarchyPointLink } from "d3-hierarchy";
 import { select, Selection } from "d3-selection";
-import { zoom, zoomIdentity, ZoomBehavior } from "d3-zoom";
+import { zoom, zoomIdentity, ZoomBehavior, D3ZoomEvent } from "d3-zoom";
 import { linkVertical, linkHorizontal } from "d3-shape";
 import {
   Layout,
@@ -68,7 +68,7 @@ let measureCtx: CanvasRenderingContext2D | null | undefined;
 function measureText(line: string): number {
   if (measureCtx === undefined) {
     try {
-      measureCtx = document.createElement("canvas").getContext("2d");
+      measureCtx = activeDocument.createElement("canvas").getContext("2d");
       if (measureCtx) measureCtx.font = `${FONT_SIZE}px sans-serif`;
     } catch {
       measureCtx = null;
@@ -156,15 +156,15 @@ export class MindMapRenderer {
 
     this.zoomBehavior = zoom<SVGSVGElement, unknown>()
       .scaleExtent([0.1, 4])
-      .filter((event: any) => {
+      .filter((event: Event) => {
         // Allow wheel-zoom and background drag; ignore drags that start on a node.
         if (event.type === "wheel") return true;
         return !(event.target as Element).closest(".omm-node");
       })
-      .on("zoom", (event: any) => {
+      .on("zoom", (event: D3ZoomEvent<SVGSVGElement, unknown>) => {
         this.viewport.attr("transform", event.transform.toString());
       });
-    this.svg.call(this.zoomBehavior as any);
+    this.zoomBehavior(this.svg);
 
     this.container.addEventListener("keydown", (e) => this.onKeyDown(e));
   }
@@ -270,12 +270,12 @@ export class MindMapRenderer {
 
     // Pack each level by the widest/tallest node actually at that depth.
     const maxDepth = nodes.reduce((m, n) => Math.max(m, n.depth), 0);
-    const extentAt: number[] = new Array(maxDepth + 1).fill(0);
+    const extentAt: number[] = new Array<number>(maxDepth + 1).fill(0);
     for (const n of nodes) {
       extentAt[n.depth] = Math.max(extentAt[n.depth], depthExtent(n.data.text));
     }
     const levelGap = layout === "top-down" ? LEVEL_GAP_TD : LEVEL_GAP_LR;
-    const levelOffset: number[] = new Array(maxDepth + 1).fill(0);
+    const levelOffset: number[] = new Array<number>(maxDepth + 1).fill(0);
     for (let d = 1; d <= maxDepth; d++) {
       levelOffset[d] = levelOffset[d - 1] + extentAt[d - 1] / 2 + levelGap + extentAt[d] / 2;
     }
@@ -307,10 +307,10 @@ export class MindMapRenderer {
 
     const linkGen =
       layout === "top-down"
-        ? linkVertical<any, HierarchyPointNode<MindNode>>()
+        ? linkVertical<HierarchyPointLink<MindNode>, HierarchyPointNode<MindNode>>()
             .x((d) => px(d))
             .y((d) => py(d))
-        : linkHorizontal<any, HierarchyPointNode<MindNode>>()
+        : linkHorizontal<HierarchyPointLink<MindNode>, HierarchyPointNode<MindNode>>()
             .x((d) => px(d))
             .y((d) => py(d));
 
@@ -324,7 +324,7 @@ export class MindMapRenderer {
       .attr("fill", "none")
       .attr("stroke", "#b0b8c4")
       .attr("stroke-width", 1.5)
-      .attr("d", (d) => linkGen(d as any) as string);
+      .attr("d", (d) => linkGen(d) ?? "");
 
     const nodeG = treeG
       .append("g")
@@ -625,7 +625,7 @@ export class MindMapRenderer {
     // Mobile: edit in a modal that floats above the keyboard, not inside the SVG.
     if (this.opts.editText) {
       this.editing = true;
-      this.opts.editText(node.text).then((result) => {
+      void this.opts.editText(node.text).then((result) => {
         this.editing = false;
         this.finishEdit(node, isNew, result);
       });
@@ -638,11 +638,10 @@ export class MindMapRenderer {
     this.editing = true;
 
     const fo = group.append("foreignObject");
-    const textarea = fo
-      .append("xhtml:textarea" as any)
-      .attr("class", "omm-edit-input")
-      .property("value", node.text)
-      .node() as HTMLTextAreaElement;
+    const textarea = activeDocument.createElement("textarea");
+    textarea.className = "omm-edit-input";
+    textarea.value = node.text;
+    fo.node()?.appendChild(textarea);
 
     // Size the editor to the *raw* content (the textarea shows raw Markdown, not
     // the rendered link labels), keeping it centered on the node.
@@ -728,7 +727,7 @@ export class MindMapRenderer {
     const tx = fullWidth / 2 - scale * (bounds.x + bounds.width / 2);
     const ty = fullHeight / 2 - scale * (bounds.y + bounds.height / 2);
     const transform = zoomIdentity.translate(tx, ty).scale(scale);
-    this.svg.call(this.zoomBehavior.transform as any, transform);
+    this.zoomBehavior.transform(this.svg, transform);
   }
 
   private clearClickTimer() {

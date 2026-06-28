@@ -15,7 +15,7 @@ interface ExportImage {
 
 /** Clone the live SVG into a standalone, content-sized SVG string. */
 function buildStandaloneSVG(live: SVGSVGElement): { svg: string; width: number; height: number } {
-  const viewport = live.querySelector(".omm-viewport") as SVGGElement | null;
+  const viewport = live.querySelector<SVGGElement>(".omm-viewport");
   if (!viewport) throw new Error("nothing to export");
   const bbox = viewport.getBBox();
   const width = Math.ceil(bbox.width + MARGIN * 2);
@@ -28,11 +28,11 @@ function buildStandaloneSVG(live: SVGSVGElement): { svg: string; width: number; 
   clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
 
   // Reset the pan/zoom transform so the full tree is captured.
-  const clonedViewport = clone.querySelector(".omm-viewport") as SVGGElement | null;
+  const clonedViewport = clone.querySelector<SVGGElement>(".omm-viewport");
   clonedViewport?.removeAttribute("transform");
 
   // Size the background rect to cover the exported area.
-  const bg = clone.querySelector(".omm-bg") as SVGRectElement | null;
+  const bg = clone.querySelector<SVGRectElement>(".omm-bg");
   if (bg) {
     bg.setAttribute("x", String(bbox.x - MARGIN));
     bg.setAttribute("y", String(bbox.y - MARGIN));
@@ -51,7 +51,7 @@ function rasterize(live: SVGSVGElement): Promise<ExportImage> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
-      const canvas = document.createElement("canvas");
+      const canvas = activeDocument.createElement("canvas");
       canvas.width = width * PNG_SCALE;
       canvas.height = height * PNG_SCALE;
       const ctx = canvas.getContext("2d");

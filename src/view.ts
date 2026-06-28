@@ -1,6 +1,17 @@
 // Custom Obsidian view that renders a Markdown file as an interactive mindmap.
 
-import { ItemView, TFile, WorkspaceLeaf, Notice, setIcon, Menu, Modal, Platform, App } from "obsidian";
+import {
+  ItemView,
+  TFile,
+  WorkspaceLeaf,
+  Notice,
+  setIcon,
+  Menu,
+  Modal,
+  Platform,
+  App,
+  ViewStateResult,
+} from "obsidian";
 import { LinkInfo, MindMapDoc, parseMarkdown, serializeMarkdown } from "./model";
 import { MindMapRenderer } from "./render";
 import { mindmapToPNG, mindmapToPDF } from "./export";
@@ -77,7 +88,7 @@ export class MindMapView extends ItemView {
 
   // --- State persistence (lets the leaf survive app reloads) ---
 
-  async setState(state: MindMapViewState, result: any): Promise<void> {
+  async setState(state: MindMapViewState, result: ViewStateResult): Promise<void> {
     if (state?.file) {
       this.filePath = state.file;
       await this.loadFile();
