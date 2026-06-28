@@ -53,6 +53,9 @@ mindmap-layout: [top-down, left-right]
     - Surveys
   - Design
   - Build
+    - Build 1
+    - Build 2
+    - Build 3
 - Backlog
   - Bugs
   - Ideas
