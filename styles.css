@@ -22,6 +22,11 @@
   flex: 0 0 auto;
 }
 
+/* Pushes the trailing items (hint, Open as Markdown) to the right. */
+.omm-toolbar-spacer {
+  flex: 1 1 auto;
+}
+
 .omm-toolbar-sep {
   width: 1px;
   align-self: stretch;

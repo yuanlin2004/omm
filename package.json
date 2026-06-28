@@ -1,6 +1,6 @@
 {
-  "name": "obsidian-mindmap-omm",
-  "version": "0.1.0",
+  "name": "omm-mindmap",
+  "version": "1.0.0",
   "description": "Edit Markdown outlines as interactive mindmaps in Obsidian.",
   "main": "main.js",
   "scripts": {

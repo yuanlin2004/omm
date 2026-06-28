@@ -185,8 +185,7 @@ export class MindMapView extends ItemView {
     this.makeButton(bar, "image", "Export as PNG", () => void this.doExport("png"));
     this.makeButton(bar, "file-down", "Export as PDF", () => void this.doExport("pdf"));
 
-    const spacer = bar.createDiv({ cls: "omm-toolbar-spacer" });
-    spacer.style.flex = "1";
+    bar.createDiv({ cls: "omm-toolbar-spacer" });
 
     bar.createSpan({
       cls: "omm-hint",

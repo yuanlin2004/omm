@@ -87,5 +87,5 @@ node test-model.mjs   # model tests (round-trip, links, display labels)
 ```
 
 To try it in a vault, copy `main.js`, `manifest.json`, and `styles.css` into
-`<vault>/.obsidian/plugins/obsidian-mindmap-omm/`, then enable the plugin in
+`<vault>/.obsidian/plugins/omm-mindmap/`, then enable the plugin in
 Obsidian's Community Plugins settings.

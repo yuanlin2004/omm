@@ -67,12 +67,12 @@ export default class MindMapPlugin extends Plugin {
 
   private async openAsMindmap(file: TFile): Promise<void> {
     const leaf = this.app.workspace.getLeaf(false);
+    // `active: true` already focuses the leaf in the main area.
     await leaf.setViewState({
       type: VIEW_TYPE_MINDMAP,
       state: { file: file.path },
       active: true,
     });
-    this.app.workspace.revealLeaf(leaf);
   }
 
   async loadSettings(): Promise<void> {
