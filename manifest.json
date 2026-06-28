@@ -1,9 +1,9 @@
 {
   "id": "obsidian-mindmap-omm",
   "name": "OMM MindMap",
-  "version": "1.0.1",
+  "version": "1.0.0",
   "minAppVersion": "1.4.0",
-  "description": "Edit Markdown outlines as interactive mindmaps. Top-down and left-right layouts, view switching, and PNG/PDF export.",
-  "author": "yuanlin",
+  "description": "Create interactive mindmaps using simple markdown outlines. Top-down and left-right layouts, view switching, and PNG/PDF export.",
+  "author": "Yuan Lin",
   "isDesktopOnly": false
 }
