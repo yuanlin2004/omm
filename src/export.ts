@@ -1,6 +1,6 @@
-// Export the rendered mindmap SVG to PNG or PDF.
-// Builds a standalone, content-sized SVG (independent of the on-screen pan/zoom),
-// rasterizes it via a canvas, then downloads the result.
+// Render the mindmap SVG to PNG or PDF bytes. Builds a standalone, content-sized SVG
+// (independent of the on-screen pan/zoom) and rasterizes it via a canvas. Returns an
+// ArrayBuffer so the caller can save it into the vault, which works on desktop and mobile.
 
 import { jsPDF } from "jspdf";
 
@@ -73,24 +73,23 @@ function rasterize(live: SVGSVGElement): Promise<ExportImage> {
   });
 }
 
-function triggerDownload(dataUrl: string, filename: string) {
-  const a = document.createElement("a");
-  a.href = dataUrl;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+function dataUrlToArrayBuffer(dataUrl: string): ArrayBuffer {
+  const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
 }
 
-export async function exportPNG(live: SVGSVGElement, basename: string): Promise<void> {
+export async function mindmapToPNG(live: SVGSVGElement): Promise<ArrayBuffer> {
   const { dataUrl } = await rasterize(live);
-  triggerDownload(dataUrl, `${basename}.png`);
+  return dataUrlToArrayBuffer(dataUrl);
 }
 
-export async function exportPDF(live: SVGSVGElement, basename: string): Promise<void> {
+export async function mindmapToPDF(live: SVGSVGElement): Promise<ArrayBuffer> {
   const { dataUrl, width, height } = await rasterize(live);
   const orientation = width >= height ? "landscape" : "portrait";
   const pdf = new jsPDF({ orientation, unit: "pt", format: [width, height] });
   pdf.addImage(dataUrl, "PNG", 0, 0, width, height);
-  pdf.save(`${basename}.pdf`);
+  return pdf.output("arraybuffer");
 }

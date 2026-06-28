@@ -1,9 +1,9 @@
 // Custom Obsidian view that renders a Markdown file as an interactive mindmap.
 
-import { ItemView, TFile, WorkspaceLeaf, Notice, setIcon, Menu } from "obsidian";
+import { ItemView, TFile, WorkspaceLeaf, Notice, setIcon, Menu, Modal, Platform, App } from "obsidian";
 import { LinkInfo, MindMapDoc, parseMarkdown, serializeMarkdown } from "./model";
 import { MindMapRenderer } from "./render";
-import { exportPNG, exportPDF } from "./export";
+import { mindmapToPNG, mindmapToPDF } from "./export";
 import type MindMapPlugin from "./main";
 
 export const VIEW_TYPE_MINDMAP = "omm-mindmap-view";
@@ -54,6 +54,10 @@ export class MindMapView extends ItemView {
       onUndo: () => void this.undo(),
       onSelectionChange: () => this.updateLayoutLabel(),
       onOpenLinks: (links, x, y) => this.openLinks(links, x, y),
+      // On mobile, edit in a modal above the keyboard instead of an in-SVG input.
+      editText: Platform.isMobile
+        ? (initial) => new Promise((resolve) => new EditNodeModal(this.app, initial, resolve).open())
+        : undefined,
     });
 
     // Reload when the file changes externally (not from our own save).
@@ -157,12 +161,29 @@ export class MindMapView extends ItemView {
       this.updateLayoutLabel();
     });
 
+    this.toolbarSeparator(bar);
+
+    // Node-editing buttons (work without a keyboard, e.g. on mobile).
+    this.makeButton(bar, "list-plus", "Add child", () =>
+      this.nodeOp(() => this.renderer?.addChildToSelected())
+    );
+    this.makeButton(bar, "plus", "Add sibling", () =>
+      this.nodeOp(() => this.renderer?.addSiblingToSelected())
+    );
+    this.makeButton(bar, "pencil", "Edit node", () =>
+      this.nodeOp(() => this.renderer?.editSelectedNode())
+    );
+    this.makeButton(bar, "trash-2", "Delete node", () =>
+      this.nodeOp(() => this.renderer?.removeSelectedNode())
+    );
+    this.makeButton(bar, "undo-2", "Undo", () => void this.undo());
+
+    this.toolbarSeparator(bar);
+
     this.makeButton(bar, "unfold-vertical", "Expand all", () => this.renderer?.expandAll());
-
     this.makeButton(bar, "maximize", "Fit to view", () => this.renderer?.fit());
-
     this.makeButton(bar, "image", "Export as PNG", () => void this.doExport("png"));
-    this.makeButton(bar, "file-text", "Export as PDF", () => void this.doExport("pdf"));
+    this.makeButton(bar, "file-down", "Export as PDF", () => void this.doExport("pdf"));
 
     const spacer = bar.createDiv({ cls: "omm-toolbar-spacer" });
     spacer.style.flex = "1";
@@ -172,7 +193,7 @@ export class MindMapView extends ItemView {
       text: "Tab: child · Enter: sibling · Del: remove · F2: rename · Shift+Enter: newline · ⌘Z: undo",
     });
 
-    this.makeButton(bar, "pencil", "Open as Markdown", () => void this.openAsMarkdown());
+    this.makeButton(bar, "file-text", "Open as Markdown", () => void this.openAsMarkdown());
   }
 
   private makeButton(parent: HTMLElement, icon: string, tooltip: string, onClick: () => void): void {
@@ -180,6 +201,19 @@ export class MindMapView extends ItemView {
     btn.setAttribute("aria-label", tooltip);
     setIcon(btn, icon);
     btn.addEventListener("click", onClick);
+  }
+
+  private toolbarSeparator(parent: HTMLElement): void {
+    parent.createDiv({ cls: "omm-toolbar-sep" });
+  }
+
+  /** Run a node operation, prompting to select a node first if none is selected. */
+  private nodeOp(fn: () => void): void {
+    if (!this.renderer?.hasSelection()) {
+      new Notice("OMM: tap a node to select it first");
+      return;
+    }
+    fn();
   }
 
   private updateLayoutLabel(): void {
@@ -190,12 +224,16 @@ export class MindMapView extends ItemView {
 
   private async doExport(kind: "png" | "pdf"): Promise<void> {
     const svg = this.renderer?.getSVGElement();
-    if (!svg) return;
+    const file = this.getFile();
+    if (!svg || !file) return;
     const base = this.getDisplayText();
     try {
-      if (kind === "png") await exportPNG(svg, base);
-      else await exportPDF(svg, base);
-      new Notice(`OMM: exported ${base}.${kind}`);
+      const data = kind === "png" ? await mindmapToPNG(svg) : await mindmapToPDF(svg);
+      // Save next to the source note (works on desktop and mobile, unlike a download).
+      const dir = file.parent && file.parent.path !== "/" ? `${file.parent.path}/` : "";
+      const path = `${dir}${base}.${kind}`;
+      await this.app.vault.adapter.writeBinary(path, data);
+      new Notice(`OMM: exported to ${path}`);
     } catch (e) {
       new Notice(`OMM: export failed — ${(e as Error).message}`);
     }
@@ -239,5 +277,53 @@ export class MindMapView extends ItemView {
       state: { file: file.path },
       active: true,
     });
+  }
+}
+
+/** Mobile node-text editor: a modal that floats above the on-screen keyboard. */
+class EditNodeModal extends Modal {
+  private resolved = false;
+
+  constructor(
+    app: App,
+    private initial: string,
+    private done: (value: string | null) => void
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.titleEl.setText("Edit node");
+    const textarea = this.contentEl.createEl("textarea", { cls: "omm-modal-textarea" });
+    textarea.value = this.initial;
+    textarea.rows = 3;
+
+    const buttons = this.contentEl.createDiv({ cls: "omm-modal-buttons" });
+    const save = buttons.createEl("button", { text: "Save", cls: "mod-cta" });
+    save.addEventListener("click", () => this.finish(textarea.value));
+    const cancel = buttons.createEl("button", { text: "Cancel" });
+    cancel.addEventListener("click", () => this.finish(null));
+
+    // Focus after the modal settles so the keyboard opens reliably.
+    window.setTimeout(() => {
+      textarea.focus();
+      textarea.select();
+    }, 50);
+  }
+
+  private finish(value: string | null): void {
+    if (this.resolved) return;
+    this.resolved = true;
+    this.done(value);
+    this.close();
+  }
+
+  onClose(): void {
+    // Dismissing the modal (tap outside / back) counts as cancel.
+    if (!this.resolved) {
+      this.resolved = true;
+      this.done(null);
+    }
+    this.contentEl.empty();
   }
 }

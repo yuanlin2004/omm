@@ -96,6 +96,11 @@ interface RendererOptions {
   onSelectionChange: () => void;
   /** Called to open the link(s) in a node; `x`/`y` are screen coords for a picker. */
   onOpenLinks: (links: LinkInfo[], x: number, y: number) => void;
+  /**
+   * Optional external text editor (used on mobile, where an inline SVG input misbehaves
+   * with the on-screen keyboard). Resolves with the new text, or null if cancelled.
+   */
+  editText?: (initial: string) => Promise<string | null>;
 }
 
 const CLICK_DELAY = 250; // ms to wait for a possible double-click before opening a link
@@ -139,9 +144,9 @@ export class MindMapRenderer {
     this.bgRect = this.svg.append("rect").attr("class", "omm-bg").attr("fill", BG_COLOR);
     this.viewport = this.svg.append("g").attr("class", "omm-viewport");
 
-    // Clicking/panning the empty background deselects (and hides the toggle).
-    // Use mousedown rather than click: d3-zoom can suppress the background click.
-    this.svg.on("mousedown", (event: MouseEvent) => {
+    // Clicking/tapping/panning the empty background deselects (and hides the toggle).
+    // Use pointerdown so it works for both mouse and touch (d3-zoom can suppress click).
+    this.svg.on("pointerdown", (event: PointerEvent) => {
       if (!(event.target as Element).closest(".omm-node")) {
         this.clearClickTimer();
         this.setSelected(null);
@@ -180,6 +185,25 @@ export class MindMapRenderer {
 
   getSelectedLayout(): Layout | null {
     return this.selectedTree()?.layout ?? null;
+  }
+
+  hasSelection(): boolean {
+    return this.selected !== null;
+  }
+
+  // Public node-operation entry points, so the toolbar can drive editing on devices
+  // without a keyboard (mobile). They no-op when nothing is selected.
+  addChildToSelected() {
+    this.addChild();
+  }
+  addSiblingToSelected() {
+    this.addSibling();
+  }
+  removeSelectedNode() {
+    this.deleteSelected();
+  }
+  editSelectedNode() {
+    if (this.selected && !this.editing) this.editNode(this.selected, false);
   }
 
   /** Expand every collapsed node across all trees (UI-only state, not persisted). */
@@ -383,6 +407,20 @@ export class MindMapRenderer {
     if (hasChildren) {
       const toggleX = w / 2 + 10;
       const toggle = g.append("g").attr("class", "omm-toggle-group").style("display", "none");
+      const onToggle = (event: Event) => {
+        event.stopPropagation();
+        d.data.collapsed = !d.data.collapsed;
+        this.render();
+      };
+      // Enlarged transparent hit area for comfortable tapping on touch screens.
+      toggle
+        .append("circle")
+        .attr("cx", toggleX)
+        .attr("cy", 0)
+        .attr("r", 14)
+        .attr("fill", "transparent")
+        .style("cursor", "pointer")
+        .on("click", onToggle);
       toggle
         .append("circle")
         .attr("class", "omm-toggle")
@@ -390,11 +428,7 @@ export class MindMapRenderer {
         .attr("cy", 0)
         .attr("r", 7)
         .attr("fill", color)
-        .on("click", (event: MouseEvent) => {
-          event.stopPropagation();
-          d.data.collapsed = !d.data.collapsed;
-          this.render();
-        });
+        .style("pointer-events", "none");
       toggle
         .append("text")
         .attr("class", "omm-toggle-sign")
@@ -587,6 +621,17 @@ export class MindMapRenderer {
   /** Open an inline textarea over a node. New empty nodes are discarded if left blank. */
   private editNode(node: MindNode, isNew: boolean) {
     if (this.editing) return;
+
+    // Mobile: edit in a modal that floats above the keyboard, not inside the SVG.
+    if (this.opts.editText) {
+      this.editing = true;
+      this.opts.editText(node.text).then((result) => {
+        this.editing = false;
+        this.finishEdit(node, isNew, result);
+      });
+      return;
+    }
+
     const placed = this.placed.get(node.id);
     if (!placed) return;
     const { group, x, y } = placed;
@@ -645,6 +690,22 @@ export class MindMapRenderer {
       }
     });
     textarea.addEventListener("blur", () => commit(true));
+  }
+
+  /** Apply (or discard) an edited value. `result` is null when the edit was cancelled. */
+  private finishEdit(node: MindNode, isNew: boolean, result: string | null) {
+    const value = result === null ? "" : result.replace(/\r/g, "").replace(/[ \t]+$/gm, "").trim();
+    if (isNew && (result === null || !value)) {
+      // Cancelled or empty brand-new node → discard it.
+      this.removeNode(node);
+      return;
+    }
+    if (result !== null && value && value !== node.text) {
+      node.text = value;
+      this.opts.onChange();
+    }
+    this.render();
+    this.container.focus();
   }
 
   /** Fit all trees into the viewport with a small margin. */

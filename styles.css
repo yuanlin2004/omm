@@ -13,6 +13,20 @@
   border-bottom: 1px solid var(--background-modifier-border);
   background: var(--background-secondary);
   flex: 0 0 auto;
+  overflow-x: auto;
+  flex-wrap: nowrap;
+}
+
+/* Keep toolbar items from shrinking; the bar scrolls instead. */
+.omm-toolbar > * {
+  flex: 0 0 auto;
+}
+
+.omm-toolbar-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 2px;
+  background: var(--background-modifier-border);
 }
 
 .omm-layout-label {
@@ -26,7 +40,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 4px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 6px;
   background: transparent;
   border: none;
   border-radius: 4px;
@@ -43,6 +59,34 @@
   color: var(--text-faint);
   margin-right: 8px;
   white-space: nowrap;
+}
+
+/* No physical keyboard on phones, and the bar is tight — hide the shortcut hint. */
+.is-mobile .omm-hint {
+  display: none;
+}
+
+.omm-modal-textarea {
+  width: 100%;
+  min-height: 84px;
+  resize: vertical;
+  box-sizing: border-box;
+  /* 16px keeps iOS from zooming the page when the field is focused. */
+  font-size: 16px;
+  line-height: 1.4;
+  padding: 8px;
+}
+
+.omm-modal-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+/* Let the toolbar's flexible spacer collapse on mobile so buttons stay reachable. */
+.is-mobile .omm-toolbar-spacer {
+  flex: 0 0 0 !important;
 }
 
 .omm-canvas {

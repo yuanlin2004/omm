@@ -13,8 +13,9 @@ An Obsidian plugin that renders any Markdown outline as an interactive mindmap, 
 - **Multi-line nodes** — a node can hold several lines; line breaks are stored in Markdown as `<br>`.
 - **Links shown as labels** — `[[Folder/Note|Alias]]` renders as an underlined **Alias** (or the note's basename — never the full path); `[Label](url)` renders as **Label**. The raw Markdown is preserved for editing and storage.
 - **Open links** — on a selected node, clicking again opens its link. Nodes with several links show a picker; internal notes open in a new tab, external URLs open in the browser.
-- **Undo** — `Cmd/Ctrl+Z` reverts the last change (rename, add, delete, layout toggle).
-- **Export** — save the current mindmap as **PNG** or **PDF**.
+- **Undo** — `Cmd/Ctrl+Z` (or the toolbar) reverts the last change (rename, add, delete, layout toggle).
+- **Export** — save the current mindmap as **PNG** or **PDF** next to the note.
+- **Desktop and mobile** — pan/zoom with touch, and edit structure from the toolbar buttons (no keyboard required).
 
 ### Mouse
 
@@ -57,6 +58,10 @@ mindmap-layout: [top-down, left-right]
   - Ideas
 ````
 
+…renders as two trees — *Project* (top-down) and *Backlog* (left-right):
+
+![OMM MindMap rendering of the example outline](docs/example.png)
+
 - **Each first-level bullet is a separate tree**, rendered top to bottom (the example above has two: *Project* and *Backlog*). There is no file-name root.
 - `mindmap-layout` is a list with one style per tree, in order. If there are more trees than entries, the extra trees use the default (**left-right**). A bare value like `mindmap-layout: top-down` is accepted for a single tree.
 - Toggling a tree's layout (toolbar) updates its entry in the list.
@@ -64,8 +69,9 @@ mindmap-layout: [top-down, left-right]
 
 ## Usage
 
-- Ribbon icon **Open as mindmap**, the command **"Open current file as mindmap"**, or the file's right-click menu.
-- In the mindmap toolbar: toggle the **selected tree's** layout, **expand all**, fit to view, export PNG, export PDF, and **Open as Markdown**. The label shows the selected tree's layout.
+- Ribbon icon **Open as OMM mindmap**, the command **"Open current file as OMM mindmap"**, or the file's right-click menu.
+- In the mindmap toolbar: toggle the **selected tree's** layout; **add child / add sibling / edit / delete** the selected node; **undo**; **expand all**; fit to view; export PNG/PDF; and **Open as Markdown**. The label shows the selected tree's layout.
+- On mobile, tap a node to select it, then use the toolbar buttons to edit (no keyboard needed). Exports are written next to the note instead of downloaded.
 - Set the default layout for new files in the plugin's settings tab.
 
 ## Development

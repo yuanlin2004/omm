@@ -27,7 +27,7 @@ export default class MindMapPlugin extends Plugin {
 
     this.registerView(VIEW_TYPE_MINDMAP, (leaf) => new MindMapView(leaf, this));
 
-    this.addRibbonIcon("git-fork", "Open as mindmap", () => {
+    this.addRibbonIcon("git-fork", "Open as OMM mindmap", () => {
       const file = this.app.workspace.getActiveFile();
       if (file) void this.openAsMindmap(file);
       else new Notice("OMM: no active Markdown file");
@@ -35,7 +35,7 @@ export default class MindMapPlugin extends Plugin {
 
     this.addCommand({
       id: "open-as-mindmap",
-      name: "Open current file as mindmap",
+      name: "Open current file as OMM mindmap",
       checkCallback: (checking: boolean) => {
         const file = this.app.workspace.getActiveFile();
         const ok = !!file && file.extension === "md";
@@ -50,7 +50,7 @@ export default class MindMapPlugin extends Plugin {
         if (file instanceof TFile && file.extension === "md") {
           menu.addItem((item) =>
             item
-              .setTitle("Open as mindmap")
+              .setTitle("Open as OMM mindmap")
               .setIcon("git-fork")
               .onClick(() => void this.openAsMindmap(file))
           );
